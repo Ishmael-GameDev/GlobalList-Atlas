@@ -7,7 +7,6 @@ using UnityEngine;
 
 namespace GlobalListAtlas.Sheets;
 
-// Читает заливки (цвета фона) ячеек из styles.xml экспортированного xlsx
 internal static class XlsxStyleReader
 {
     private static readonly XNamespace Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -125,6 +124,7 @@ internal static class XlsxStyleReader
 
     private static List<Color32> LoadThemeColors(ZipArchive zip)
     {
+        // Порядок по спецификации OOXML: 0=lt1,1=dk1,2=lt2,3=dk2,4..9=accent1..6,10=hlink,11=folHlink
         var result = new List<Color32>(new Color32[12]);
         if (zip.GetEntry("xl/theme/theme1.xml") == null)
             return result;
@@ -155,6 +155,7 @@ internal static class XlsxStyleReader
         }
         catch
         {
+            // Тема повреждена/непривычного формата — просто не резолвим theme-цвета, это не критично.
         }
 
         return result;

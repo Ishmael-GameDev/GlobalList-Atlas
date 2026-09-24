@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -28,6 +28,47 @@ public static class GoogleDriveDownloader
         return match.Success ? match.Groups[1].Value : null;
     }
 
+    // Размер файла на Google Drive без скачивания: запрашиваем только заголовки
+    public static async Task<long?> TryGetFileSizeAsync(string driveUrl)
+    {
+        var fileId = ExtractFileId(driveUrl);
+        if (fileId == null) return null;
+
+        try
+        {
+            var cookieContainer = new CookieContainer();
+            using var handler = new HttpClientHandler
+            {
+                CookieContainer = cookieContainer,
+                AllowAutoRedirect = true,
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            };
+
+            using var client = new HttpClient(handler);
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+            var response = await client.GetAsync($"https://drive.google.com/uc?export=download&id={fileId}",
+                HttpCompletionOption.ResponseHeadersRead);
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+
+            // Большой файл — Drive отдаёт страницу подтверждения, реальный размер за ней
+            if (contentType.Contains("text/html"))
+            {
+                string html = await response.Content.ReadAsStringAsync();
+                string downloadUrl = BuildConfirmedDownloadUrl(html, fileId);
+                response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            }
+
+            return response.IsSuccessStatusCode ? response.Content.Headers.ContentLength : null;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"Не удалось узнать размер файла Drive id={fileId}: {e.Message}");
+            return null;
+        }
+    }
+
     public static async Task<byte[]> DownloadAsync(
     string driveUrl,
     Action<long> onSizeRetrieved = null,
@@ -50,7 +91,7 @@ public static class GoogleDriveDownloader
         client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
         string baseUrl = $"https://drive.google.com/uc?export=download&id={fileId}";
-        Modding.Logger.Log($"Скачивание файла с Google Drive, id={fileId}");
+        Log.Info($"Скачивание файла с Google Drive, id={fileId}");
 
         var response = await client.GetAsync(baseUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
@@ -61,25 +102,9 @@ public static class GoogleDriveDownloader
         if (contentType.Contains("text/html"))
         {
             string html = await response.Content.ReadAsStringAsync();
-            Modding.Logger.Log("Файл большой — извлекаем параметры подтверждения из HTML...");
+            Log.Info("Файл большой — извлекаем параметры подтверждения из HTML...");
 
-            var formMatch = FormActionRegex.Match(html);
-            string actionUrl = formMatch.Success
-                ? WebUtility.HtmlDecode(formMatch.Groups[1].Value)
-                : "https://drive.usercontent.google.com/download";
-
-            var inputs = ParseFormInputs(html);
-
-            if (!inputs.Any(k => k.Key.Equals("id", StringComparison.OrdinalIgnoreCase)))
-                inputs.Add(new KeyValuePair<string, string>("id", fileId));
-            if (!inputs.Any(k => k.Key.Equals("export", StringComparison.OrdinalIgnoreCase)))
-                inputs.Add(new KeyValuePair<string, string>("export", "download"));
-            if (!inputs.Any(k => k.Key.Equals("confirm", StringComparison.OrdinalIgnoreCase)))
-                inputs.Add(new KeyValuePair<string, string>("confirm", "t"));
-
-            string queryString = string.Join("&", inputs.Select(i => $"{Uri.EscapeDataString(i.Key)}={Uri.EscapeDataString(i.Value)}"));
-            string separator = actionUrl.Contains("?") ? "&" : "?";
-            string downloadUrl = $"{actionUrl}{separator}{queryString}";
+            string downloadUrl = BuildConfirmedDownloadUrl(html, fileId);
 
             response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
@@ -89,7 +114,7 @@ public static class GoogleDriveDownloader
 
         if (!response.IsSuccessStatusCode)
         {
-            Modding.Logger.Log($"Ошибка скачивания: HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+            Log.Error($"Ошибка скачивания: HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
             return null;
         }
 
@@ -114,12 +139,34 @@ public static class GoogleDriveDownloader
 
         if (finalContentType.Contains("text/html"))
         {
-            Modding.Logger.Log("Google Drive снова вернул HTML-страницу вместо файла. Скачивание не удалось.");
+            Log.Info("Google Drive снова вернул HTML-страницу вместо файла. Скачивание не удалось.");
             return null;
         }
 
-        Modding.Logger.Log($"Скачано {bytes.Length} байт для id={fileId}");
+        Log.Info($"Скачано {bytes.Length} байт для id={fileId}");
         return bytes;
+    }
+
+    // Собирает ссылку на скачивание из формы подтверждения, которую Drive показывает
+    private static string BuildConfirmedDownloadUrl(string html, string fileId)
+    {
+        var formMatch = FormActionRegex.Match(html);
+        string actionUrl = formMatch.Success
+            ? WebUtility.HtmlDecode(formMatch.Groups[1].Value)
+            : "https://drive.usercontent.google.com/download";
+
+        var inputs = ParseFormInputs(html);
+
+        if (!inputs.Any(k => k.Key.Equals("id", StringComparison.OrdinalIgnoreCase)))
+            inputs.Add(new KeyValuePair<string, string>("id", fileId));
+        if (!inputs.Any(k => k.Key.Equals("export", StringComparison.OrdinalIgnoreCase)))
+            inputs.Add(new KeyValuePair<string, string>("export", "download"));
+        if (!inputs.Any(k => k.Key.Equals("confirm", StringComparison.OrdinalIgnoreCase)))
+            inputs.Add(new KeyValuePair<string, string>("confirm", "t"));
+
+        string queryString = string.Join("&", inputs.Select(i => $"{Uri.EscapeDataString(i.Key)}={Uri.EscapeDataString(i.Value)}"));
+        string separator = actionUrl.Contains("?") ? "&" : "?";
+        return $"{actionUrl}{separator}{queryString}";
     }
 
     private static List<KeyValuePair<string, string>> ParseFormInputs(string html)

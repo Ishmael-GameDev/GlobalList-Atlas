@@ -16,7 +16,7 @@ public enum MapTag
     Fullgear,
     Consistency,
     Sync,
-    Presice,
+    Presice, // так тег назван/написан в таблице (см. столбец G) — не переименовывать без проверки самой таблицы
     Memory,
     Puzzle,
     Routing,
@@ -24,7 +24,7 @@ public enum MapTag
     Combat
 }
 
-// Реестр тегов карт
+// Реестр тегов карт (раскрывающийся список в столбце G таблицы) и их цветов
 public static class TagConfig
 {
     public const string TagSeparator = ", ";
@@ -50,6 +50,7 @@ public static class TagConfig
     private static readonly Dictionary<string, MapTag> LabelToTag =
         Palette.ToDictionary(p => p.Label, p => p.Tag, StringComparer.Ordinal);
 
+    // Разбирает содержимое ячейки столбца G ("Tag1, Tag2, ...") в список тегов
     public static List<MapTag> ParseTags(string rawCellValue)
     {
         var result = new List<MapTag>();

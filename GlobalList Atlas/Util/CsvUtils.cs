@@ -68,7 +68,7 @@ public static class CsvUtils
                 if (row == oneBasedRow && col == zeroBasedColumn)
                     return field.ToString();
                 if (row == oneBasedRow)
-                    return null;
+                    return null; // строка закончилась раньше, чем дошли до нужной колонки
 
                 field.Clear();
                 col = 0;
@@ -81,6 +81,7 @@ public static class CsvUtils
             i++;
         }
 
+        // последняя ячейка без завершающего \n
         if (row == oneBasedRow && col == zeroBasedColumn)
             return field.ToString();
 

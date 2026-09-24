@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,11 +7,13 @@ using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using GlobalListAtlas.Archive;
+using GlobalListAtlas.Logging;
+using GlobalListAtlas.Util;
 using UnityEngine;
 
 namespace GlobalListAtlas.Install;
 
-//Один манифест мода из ModLinks.xml
+// Один манифест мода из ModLinks.xml. DownloadUrl/Sha256 уже выбраны под текущую ОС.
 public class PublicModManifest
 {
     public string Name;
@@ -28,15 +30,14 @@ public class PublicModDownloadResult
     public string InstalledFolder;
 }
 
-
 public static class PublicModInstaller
 {
     private const string ModLinksUrl = "https://raw.githubusercontent.com/hk-modding/modlinks/main/ModLinks.xml";
 
-    private static readonly byte[] ZipMagic = { 0x50, 0x4B, 0x03, 0x04 };
+    // Сколько раз пытаться скачать файл, если его SHA256 не совпал с манифестом
+    private const int MaxDownloadAttempts = 3;
 
-    private static string ManagedModsFolder =>
-        Path.Combine(Application.dataPath, "Managed", "Mods");
+    private static readonly byte[] ZipMagic = { 0x50, 0x4B, 0x03, 0x04 };
 
     private static List<PublicModManifest> _cachedManifests;
 
@@ -45,13 +46,13 @@ public static class PublicModInstaller
         if (_cachedManifests != null && !forceRefresh)
             return _cachedManifests;
 
-        Modding.Logger.Log($"Скачивание ModLinks.xml: {ModLinksUrl}");
+        Log.Info($"Скачивание ModLinks.xml: {ModLinksUrl}");
 
         using var client = new HttpClient();
         string xml = await client.GetStringAsync(ModLinksUrl);
 
         _cachedManifests = ParseManifests(xml);
-        Modding.Logger.Log($"ModLinks.xml разобран, найдено манифестов: {_cachedManifests.Count}");
+        Log.Info($"ModLinks.xml разобран, найдено манифестов: {_cachedManifests.Count}");
         return _cachedManifests;
     }
 
@@ -66,7 +67,7 @@ public static class PublicModInstaller
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"Не удалось разобрать ModLinks.xml: {e.Message}");
+            Log.Error($"Не удалось разобрать ModLinks.xml: {e.Message}");
             return result;
         }
 
@@ -74,30 +75,49 @@ public static class PublicModInstaller
             return result;
 
         XNamespace ns = doc.Root.GetDefaultNamespace();
+        string platformTag = GetPlatformLinkTag();
 
         foreach (var manifestEl in doc.Root.Elements(ns + "Manifest"))
         {
             string name = manifestEl.Element(ns + "Name")?.Value?.Trim();
-            string version = manifestEl.Element(ns + "Version")?.Value?.Trim();
-
-            var linkEl = manifestEl.Element(ns + "Link");
-            string url = linkEl?.Value?.Trim();
-            string sha256 = linkEl?.Attribute("SHA256")?.Value?.Trim();
-
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(url))
+            if (string.IsNullOrEmpty(name))
                 continue;
 
+            // Большинство модов имеют одну универсальную ссылку <Link>, но некоторые —
+            // отдельные сборки под каждую ОС: <Links><Windows/><Mac/><Linux/></Links>.
+            XElement linkEl = manifestEl.Element(ns + "Link")
+                              ?? manifestEl.Element(ns + "Links")?.Element(ns + platformTag);
+
+            // Манифест без ссылки под нашу платформу всё равно сохраняем (с пустым URL),
+            // чтобы при установке сказать "нет сборки под вашу ОС", а не "мод не найден".
             result.Add(new PublicModManifest
             {
                 Name = name,
-                Version = version,
-                DownloadUrl = url,
-                Sha256 = sha256
+                Version = manifestEl.Element(ns + "Version")?.Value?.Trim(),
+                DownloadUrl = linkEl?.Value?.Trim(),
+                Sha256 = linkEl?.Attribute("SHA256")?.Value?.Trim()
             });
         }
 
         return result;
     }
+
+    private static string GetPlatformLinkTag() => SystemInfo.operatingSystemFamily switch
+    {
+        OperatingSystemFamily.MacOSX => "Mac",
+        OperatingSystemFamily.Linux => "Linux",
+        _ => "Windows"
+    };
+
+    public static PublicModManifest GetCachedManifest(string modName)
+    {
+        if (_cachedManifests == null || string.IsNullOrWhiteSpace(modName))
+            return null;
+
+        return _cachedManifests.FirstOrDefault(m => string.Equals(m.Name, modName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static bool ManifestsLoaded => _cachedManifests != null;
 
     public static async Task<PublicModManifest> FindManifestAsync(string modName)
     {
@@ -116,28 +136,17 @@ public static class PublicModInstaller
             return result;
         }
 
-        Modding.Logger.Log($"Скачивание мода '{manifest.Name}' v{manifest.Version}: {manifest.DownloadUrl}");
-
-        byte[] bytes;
-        try
+        if (string.IsNullOrEmpty(manifest.DownloadUrl))
         {
-            using var client = new HttpClient();
-            bytes = await client.GetByteArrayAsync(manifest.DownloadUrl);
-        }
-        catch (Exception e)
-        {
-            result.ErrorMessage = $"Не удалось скачать файл мода '{manifest.Name}': {e.Message}";
+            result.ErrorMessage = $"У мода '{manifest.Name}' нет сборки для платформы {GetPlatformLinkTag()}";
             return result;
         }
 
-        if (!string.IsNullOrEmpty(manifest.Sha256) && !VerifySha256(bytes, manifest.Sha256))
-        {
-            Modding.Logger.Log($"[WARN] SHA256 скачанного файла мода '{manifest.Name}' не совпадает с ModLinks.xml " +
-                                "(файл мог обновиться на сервере позже манифеста, либо повреждён при скачивании) — " +
-                                "установка продолжается.");
-        }
+        byte[] bytes = await DownloadVerifiedAsync(manifest, result);
+        if (bytes == null)
+            return result; // ErrorMessage уже заполнен
 
-        string targetFolder = Path.Combine(ManagedModsFolder, SanitizeFolderName(manifest.Name));
+        string targetFolder = Path.Combine(GamePaths.ModsFolder, SanitizeFolderName(manifest.Name));
 
         try
         {
@@ -165,8 +174,46 @@ public static class PublicModInstaller
 
         result.Success = true;
         result.InstalledFolder = targetFolder;
-        Modding.Logger.Log($"Мод '{manifest.Name}' установлен: {targetFolder}");
+        Log.Info($"Мод '{manifest.Name}' установлен: {targetFolder}");
         return result;
+    }
+
+    // Скачивает файл мода и сверяет SHA256. При несовпадении перекачивает заново
+    private static async Task<byte[]> DownloadVerifiedAsync(PublicModManifest manifest, PublicModDownloadResult result)
+    {
+        bool hasHash = !string.IsNullOrEmpty(manifest.Sha256);
+        if (!hasHash)
+            Log.Warn($"У мода '{manifest.Name}' в ModLinks.xml нет SHA256 — целостность файла проверить невозможно");
+
+        for (int attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
+        {
+            Log.Info($"Скачивание мода '{manifest.Name}' v{manifest.Version} (попытка {attempt}/{MaxDownloadAttempts}): {manifest.DownloadUrl}");
+
+            byte[] bytes;
+            try
+            {
+                using var client = new HttpClient();
+                bytes = await client.GetByteArrayAsync(manifest.DownloadUrl);
+            }
+            catch (Exception e)
+            {
+                result.ErrorMessage = $"Не удалось скачать файл мода '{manifest.Name}': {e.Message}";
+                return null;
+            }
+
+            if (!hasHash)
+                return bytes;
+
+            string actual = ComputeSha256Hex(bytes);
+            if (string.Equals(actual, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+                return bytes;
+
+            Log.Warn($"SHA256 мода '{manifest.Name}' не совпадает (ожидался {manifest.Sha256}, получен {actual}), " +
+                     (attempt < MaxDownloadAttempts ? "скачиваю заново" : "мод пропущен"));
+        }
+
+        result.ErrorMessage = $"Файл мода '{manifest.Name}' не прошёл проверку SHA256 после {MaxDownloadAttempts} попыток — установка отменена";
+        return null;
     }
 
     public static async Task<List<PublicModDownloadResult>> DownloadPublicModsAsync(IEnumerable<string> modNames)
@@ -174,6 +221,29 @@ public static class PublicModInstaller
         var results = new List<PublicModDownloadResult>();
         foreach (var name in modNames)
             results.Add(await DownloadPublicModAsync(name));
+        return results;
+    }
+
+    public static async Task<List<PublicModDownloadResult>> DownloadMissingPublicModsAsync(IEnumerable<string> modNames)
+    {
+        var results = new List<PublicModDownloadResult>();
+
+        foreach (var name in modNames)
+        {
+            if (RequiredModsChecker.IsModInstalled(name))
+            {
+                results.Add(new PublicModDownloadResult
+                {
+                    ModName = name,
+                    Success = true,
+                    InstalledFolder = null
+                });
+                continue;
+            }
+
+            results.Add(await DownloadPublicModAsync(name));
+        }
+
         return results;
     }
 
@@ -202,20 +272,10 @@ public static class PublicModInstaller
         }
     }
 
-    private static bool VerifySha256(byte[] data, string expectedHex)
+    private static string ComputeSha256Hex(byte[] data)
     {
-        expectedHex = expectedHex.Trim();
         using var sha = SHA256.Create();
-        byte[] hash = sha.ComputeHash(data);
-        string actualHex = BitConverter.ToString(hash).Replace("-", "");
-
-        if (expectedHex.Length != actualHex.Length)
-        {
-            return actualHex.Equals(expectedHex.TrimStart('0'), StringComparison.OrdinalIgnoreCase)
-                || expectedHex.EndsWith(actualHex, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return string.Equals(actualHex, expectedHex, StringComparison.OrdinalIgnoreCase);
+        return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "");
     }
 
     private static string SanitizeFolderName(string name)
@@ -223,27 +283,5 @@ public static class PublicModInstaller
         foreach (var c in Path.GetInvalidFileNameChars())
             name = name.Replace(c, '_');
         return name;
-    }
-    public static async Task<List<PublicModDownloadResult>> DownloadMissingPublicModsAsync(IEnumerable<string> modNames)
-    {
-        var results = new List<PublicModDownloadResult>();
-
-        foreach (var name in modNames)
-        {
-            if (RequiredModsChecker.IsModInstalled(name))
-            {
-                results.Add(new PublicModDownloadResult
-                {
-                    ModName = name,
-                    Success = true,
-                    InstalledFolder = null
-                });
-                continue;
-            }
-
-            results.Add(await DownloadPublicModAsync(name));
-        }
-
-        return results;
     }
 }

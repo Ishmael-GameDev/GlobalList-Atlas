@@ -29,7 +29,7 @@ public static class LeagueConfig
         (League.White,   "WHITE LEAGUE",   new Color32(0xEF, 0xEF, 0xEF, 0xFF)),
     };
 
-    //Ищет ближайший (по евклидовому расстоянию в RGB) цвет лиги к заданному цвету ячейки
+    // Ищет ближайший (по евклидовому расстоянию в RGB) цвет лиги к заданному цвету ячейки
     public static League ClassifyColor(Color32? cellColor)
     {
         if (cellColor == null)

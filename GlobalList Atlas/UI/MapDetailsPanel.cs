@@ -1,11 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using GlobalListAtlas.Configuration;
 using GlobalListAtlas.Install;
+using GlobalListAtlas.Logging;
 using GlobalListAtlas.Maps;
+using GlobalListAtlas.Util;
 using GlobalListAtlas.Utility;
 using UnityEngine;
 using UnityEngine.UI;
@@ -18,10 +20,10 @@ public class MapDetailsPanel : MonoBehaviour
     private const float PanelAnchorMaxX = MapListPanel.PanelWidthFraction * 3f;
     private const float PanelRightReduction = 500f;
 
-    private static readonly Color PositiveBadgeColor = new(0.16f, 0.45f, 0.2f, 1f);
-    private static readonly Color NegativeBadgeColor = new(0.45f, 0.16f, 0.16f, 1f);
-    private static readonly Color NeutralBadgeColor = new(0.22f, 0.22f, 0.26f, 1f);
-    private static readonly Color NotificationBg = new(0.4f, 0.32f, 0.08f, 0.95f);
+    private static readonly Color PositiveBadgeColor = new(0.129f, 0.302f, 0.176f, 0.85f);
+    private static readonly Color NegativeBadgeColor = new(0.310f, 0.145f, 0.153f, 0.85f);
+    private static readonly Color NeutralBadgeColor = new(0.165f, 0.176f, 0.212f, 0.85f);
+    private static readonly Color NotificationBg = new(0.278f, 0.227f, 0.086f, 0.85f);
     private static readonly Color MutedGray = new(0.75f, 0.75f, 0.75f, 1f);
     private static readonly Color GoodGreen = new(0.6f, 1f, 0.6f);
     private static readonly Color BadRed = new(1f, 0.6f, 0.6f);
@@ -29,10 +31,24 @@ public class MapDetailsPanel : MonoBehaviour
     private static readonly Color DownloadedYellowBg = new(0.55f, 0.47f, 0.12f, 1f);
     private static readonly Color LaunchedGreenBg = new(0.16f, 0.45f, 0.2f, 1f);
     private static readonly Color DarkButtonBg = new(0.14f, 0.14f, 0.18f, 1f);
-    private static readonly Color ReinstallRedBg = new(0.55f, 0.14f, 0.14f, 1f);
+    private static readonly Color FavoriteBg = new(0.478f, 0.192f, 0.255f, 1f); // как у сердечка в списке
+    private static readonly Color RestartButtonBg = new(0.639f, 0.373f, 0.098f, 1f);   // оранжевый
+    private static readonly Color RestartButtonFill = new(0.949f, 0.639f, 0.243f, 1f);
+    private static readonly Color ReinstallRedBg = new(0.435f, 0.220f, 0.192f, 1f);   // приглушённый кирпич
+    private static readonly Color DeleteCrimsonBg = new(0.455f, 0.086f, 0.180f, 1f); // багровый
+    private static readonly Color DeleteCrimsonFill = new(0.796f, 0.243f, 0.373f, 1f);
+    private static readonly Color PrimaryActionBg = new(0.239f, 0.475f, 0.455f, 1f);  // ведущие действия
+    private static readonly Color ModsActionBg = new(0.255f, 0.400f, 0.549f, 1f);
 
     private const float ReinstallButtonHeight = 30f;
+    private const float HeaderRowHeight = 30f;
+    private const float CloseButtonReserve = 46f;
     private const float ReinstallButtonWidthFraction = 0.5f;
+
+    private Button _favoriteButton;
+    private Image _favoriteImage;
+    private Text _favoriteText;
+    private Button _openSheetButton;
 
     private bool _languageSubscribed;
 
@@ -55,6 +71,9 @@ public class MapDetailsPanel : MonoBehaviour
     private Button _installPublicModsButton;
     private Text _installPublicModsButtonText;
     private bool _installPublicModsInProgress;
+    private bool _editorActionInProgress;
+    private bool _manifestsRequested;
+    private readonly HashSet<string> _sizeRequested = new();
     private readonly HashSet<string> _reinstallingMapKeys = new();
 
     private bool _autoSaveSubscribed;
@@ -206,7 +225,52 @@ public class MapDetailsPanel : MonoBehaviour
         panel.offsetMax = new Vector2(
             -MapListPanel.ScreenPadding + MapListPanel.PanelHorizontalShift - PanelRightReduction,
             -MapListPanel.ScreenPadding);
+        // Действия над картой — в шапке панели, а не внутри описания.
+        // Справа оставлено место под кнопку закрытия, чтобы её не перекрывать.
+        var headerRow = new GameObject("HeaderActions", typeof(RectTransform));
+        headerRow.transform.SetParent(panel, false);
+        var headerRect = (RectTransform)headerRow.transform;
+        headerRect.anchorMin = new Vector2(0, 1);
+        headerRect.anchorMax = new Vector2(1, 1);
+        headerRect.pivot = new Vector2(0.5f, 1);
+        headerRect.sizeDelta = new Vector2(-(CloseButtonReserve + 8f), HeaderRowHeight);
+        headerRect.anchoredPosition = new Vector2(-(CloseButtonReserve + 8f) / 2f, -6f);
+
+        var (favGo, favButton, favImage, favText) = UIFactory.CreateButton(
+            headerRow.transform, "FavoriteButton", Localization.Get("favorite.add"), 15);
+        favText.alignment = TextAnchor.MiddleCenter;
+        favText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        UIFactory.AddOutline(favGo);
+        var favRect = (RectTransform)favGo.transform;
+        favRect.anchorMin = new Vector2(0, 0);
+        favRect.anchorMax = new Vector2(0, 1);
+        favRect.pivot = new Vector2(0, 0.5f);
+        favRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(favText, min: 120f), 0);
+        favRect.anchoredPosition = new Vector2(8f, 0);
+        _favoriteButton = favButton;
+        _favoriteImage = favImage;
+        _favoriteText = favText;
+        favButton.onClick.AddListener(OnFavoriteClicked);
+
+        var (linkGo, linkButton, linkImage, linkText) = UIFactory.CreateButton(
+            headerRow.transform, "OpenInSheetButton", Localization.Get("button.open_in_sheet"), 15);
+        linkText.alignment = TextAnchor.MiddleCenter;
+        linkText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        linkImage.color = DarkButtonBg;
+        linkText.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+        UIFactory.AddOutline(linkGo);
+        var linkRect = (RectTransform)linkGo.transform;
+        linkRect.anchorMin = new Vector2(0, 0);
+        linkRect.anchorMax = new Vector2(0, 1);
+        linkRect.pivot = new Vector2(0, 0.5f);
+        linkRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(linkText, min: 150f), 0);
+        linkRect.anchoredPosition = new Vector2(favRect.sizeDelta.x + 16f, 0);
+        _openSheetButton = linkButton;
+        linkButton.onClick.AddListener(OnOpenSheetClicked);
+
         var (content, _) = UIFactory.CreateVerticalScrollList(panel, "DetailsScroll");
+        var scrollRoot = (RectTransform)content.parent.parent;
+        scrollRoot.offsetMax = new Vector2(scrollRoot.offsetMax.x, -(HeaderRowHeight + 10f));
         _content = content;
 
         var closeBtnGo = new GameObject("CloseMenuButton", typeof(RectTransform), typeof(Image), typeof(Button));
@@ -239,11 +303,29 @@ public class MapDetailsPanel : MonoBehaviour
         closeTextRect.offsetMin = Vector2.zero;
         closeTextRect.offsetMax = Vector2.zero;
         closeBtn.onClick.AddListener(() => MapListPanel.Instance?.Close());
+        // Небольшая кнопка справки слева от крестика
+        var (helpGo, helpButton, helpImage, helpText) = UIFactory.CreateButton(panel, "HelpButton", "?", 20);
+        helpText.alignment = TextAnchor.MiddleCenter;
+        var helpTextRect = (RectTransform)helpText.transform;
+        helpTextRect.offsetMin = new Vector2(0, helpTextRect.offsetMin.y);
+        helpTextRect.offsetMax = new Vector2(0, helpTextRect.offsetMax.y);
+        helpImage.color = DarkButtonBg;
+        UIFactory.AddOutline(helpGo);
+        var helpRect = (RectTransform)helpGo.transform;
+        helpRect.anchorMin = new Vector2(1, 1);
+        helpRect.anchorMax = new Vector2(1, 1);
+        helpRect.pivot = new Vector2(1, 1);
+        helpRect.sizeDelta = new Vector2(34, 34);
+        helpRect.anchoredPosition = new Vector2(-(CloseButtonReserve + 4f), -9f);
+        helpButton.onClick.AddListener(() => HelpPopup.Show());
     }
 
     private void RefreshContent()
     {
         if (_content == null) return;
+
+        UpdateHeaderButtons();
+
         foreach (var go in _contentGos) Destroy(go);
         _contentGos.Clear();
         _downloadButton = null;
@@ -258,8 +340,13 @@ public class MapDetailsPanel : MonoBehaviour
         }
 
         var map = _currentMap;
-        var title = AddText(map.Name, 26, TextAnchor.MiddleLeft, map.CellColor, 36);
+        var title = AddWrappedText(map.Name, 26, map.CellColor);
         title.fontStyle = FontStyle.Bold;
+
+        string author = string.IsNullOrWhiteSpace(map.Creator)
+            ? $"<color=#AAAAAA>{Localization.Get("panel.author_unknown")}</color>"
+            : map.Creator;
+        AddWrappedText($"{Localization.Get("panel.author")}: {author}", 18, Color.white);
 
         var editorItems = (map.Editors ?? new List<MapEditor>())
             .Select(e => (EditorConfig.GetLabel(e), (Color32)EditorConfig.GetColor(e)))
@@ -267,7 +354,7 @@ public class MapDetailsPanel : MonoBehaviour
         string editorsRich = editorItems.Count > 0
             ? BuildColoredList(editorItems)
             : $"<color=#AAAAAA>{Localization.Get("panel.not_specified")}</color>";
-        AddText($"{Localization.Get("panel.editor")}: {editorsRich}", 18, TextAnchor.MiddleLeft, Color.white, 26);
+        AddWrappedText($"{Localization.Get("panel.editor")}: {editorsRich}", 18, Color.white);
 
         var tagItems = (map.Tags ?? new List<MapTag>())
             .Select(t => (TagConfig.GetLabel(t), (Color32)TagConfig.GetColor(t)))
@@ -275,7 +362,7 @@ public class MapDetailsPanel : MonoBehaviour
         string tagsRich = tagItems.Count > 0
             ? BuildColoredList(tagItems)
             : $"<color=#AAAAAA>{Localization.Get("panel.none")}</color>";
-        AddText($"{Localization.Get("panel.tags")}: {tagsRich}", 18, TextAnchor.MiddleLeft, Color.white, 26);
+        AddWrappedText($"{Localization.Get("panel.tags")}: {tagsRich}", 18, Color.white);
 
         AddText($"{Localization.Get("panel.rating")}: {StarsToString(map.Stars)}", 18, TextAnchor.MiddleLeft, Color.white, 26);
 
@@ -286,8 +373,7 @@ public class MapDetailsPanel : MonoBehaviour
                 : map.VerifierName;
             string datePart = map.VerificationDate.HasValue
                 ? $" ({map.VerificationDate.Value:dd.MM.yyyy})" : "";
-            AddText($"{Localization.Get("panel.verified")}: {verifierPart}{datePart}",
-                18, TextAnchor.MiddleLeft, GoodGreen, 26);
+            AddWrappedText($"{Localization.Get("panel.verified")}: {verifierPart}{datePart}", 18, GoodGreen);
         }
         else
         {
@@ -295,10 +381,18 @@ public class MapDetailsPanel : MonoBehaviour
         }
         AddSpacer(10);
 
+        AddEditorsSection(map);
+
         bool filesAvailable = !string.IsNullOrEmpty(map.DriveUrl);
-        AddBadge(Localization.Get("badge.files"),
-            filesAvailable ? Localization.Get("badge.files_available") : Localization.Get("badge.files_missing"),
+        string filesValue = filesAvailable
+            ? Localization.Get("badge.files_available") + FormatKnownArchiveSize(map)
+            : Localization.Get("badge.files_missing");
+        AddBadge(Localization.Get("badge.files"), filesValue,
             filesAvailable ? PositiveBadgeColor : NegativeBadgeColor);
+
+        // Размер узнаём заранее по заголовкам ответа Drive, без скачивания
+        if (filesAvailable)
+            _ = EnsureArchiveSizeAsync(map);
 
         var manager = GlobalListAtlasMod.Instance?.DownloadManager;
         string targetFolder = manager?.GetTargetFolder(map);
@@ -320,13 +414,11 @@ public class MapDetailsPanel : MonoBehaviour
             var (received, total) = manager != null
                 ? manager.GetMapDownloadProgress(map) : (0L, (long?)null);
             UpdateDownloadProgressBar(received, total);
-            var (cancelGo, cancelButton, cancelImage, cancelText) =
-                UIFactory.CreateButton(_content, "CancelDownloadButton",
-                    Localization.Get("button.cancel_download"), 16);
-            SetRowHeight(cancelGo, 30);
+            var (row_cancelGo, cancelGo, cancelButton, cancelImage, cancelText) = UIFactory.CreateCompactButtonRow(
+                _content, "CancelDownloadButton", Localization.Get("button.cancel_download"), 16, 30f);
             cancelImage.color = ReinstallRedBg;
             cancelText.color = UIFactory.GetReadableTextColor(ReinstallRedBg);
-            _contentGos.Add(cancelGo);
+            _contentGos.Add(row_cancelGo);
             cancelButton.onClick.AddListener(() => manager?.CancelMapDownload(map));
         }
         else
@@ -341,10 +433,13 @@ public class MapDetailsPanel : MonoBehaviour
             else
                 downloadButtonLabel = Localization.Get("button.launch");
 
-            var (downloadGo, downloadButton, downloadImage, downloadText) =
-                UIFactory.CreateButton(_content, "DownloadButton", downloadButtonLabel, 20);
-            SetRowHeight(downloadGo, 44);
-            _contentGos.Add(downloadGo);
+            var (row_downloadGo, downloadGo, downloadButton, downloadImage, downloadText) = UIFactory.CreateCompactButtonRow(
+                _content, "DownloadButton", downloadButtonLabel, 20, 40f);
+            downloadImage.color = PrimaryActionBg;
+            downloadText.color = UIFactory.GetReadableTextColor(PrimaryActionBg);
+            _contentGos.Add(row_downloadGo);
+
+            AddUnloadButton(map);
             _downloadButton = downloadButton;
             _downloadButtonText = downloadText;
 
@@ -372,13 +467,11 @@ public class MapDetailsPanel : MonoBehaviour
             }
         }
 
-        var (editorFolderGo, editorFolderButton, editorFolderImage, editorFolderText) =
-            UIFactory.CreateButton(_content, "OpenEditorFolderButton",
-                Localization.Get("button.open_editor_folder"), 18);
-        SetRowHeight(editorFolderGo, 36);
+        var (row_editorFolderGo, editorFolderGo, editorFolderButton, editorFolderImage, editorFolderText) = UIFactory.CreateCompactButtonRow(
+                _content, "OpenEditorFolderButton", Localization.Get("button.open_editor_folder"), 18, 32f);
         editorFolderImage.color = DarkButtonBg;
         editorFolderText.color = UIFactory.GetReadableTextColor(DarkButtonBg);
-        _contentGos.Add(editorFolderGo);
+        _contentGos.Add(row_editorFolderGo);
         editorFolderButton.onClick.AddListener(() => OnOpenEditorFolderClicked(map));
 
         if (isDownloaded)
@@ -390,7 +483,7 @@ public class MapDetailsPanel : MonoBehaviour
                 string message = txtScan.HasReadmeNamed
                     ? Localization.Get("txt.readme_found", fileList)
                     : Localization.Get("txt.file_found", fileList);
-                AddText(message, 16, TextAnchor.MiddleLeft, TxtNoticeYellow, 24);
+                AddWrappedText(message, 16, TxtNoticeYellow);
             }
         }
         AddSpacer(10);
@@ -402,15 +495,16 @@ public class MapDetailsPanel : MonoBehaviour
 
         if (hasRequiredMods)
         {
-            AddModsChecklist(map.RequiredPublicMods, RequiredModsChecker.IsModInstalled);
+            AddModRows(map.RequiredPublicMods
+                .Select(n => (Display: n, Folder: ModFolderManager.ResolveFolderName(n), ModLinksName: n)));
             bool allPublicModsInstalled = map.RequiredPublicMods.All(RequiredModsChecker.IsModInstalled);
             if (!allPublicModsInstalled)
             {
-                var (installPublicGo, installPublicButton, installPublicImage, installPublicText) =
-                    UIFactory.CreateButton(_content, "InstallPublicModsButton",
-                        Localization.Get("button.install_public_mods"), 20);
-                SetRowHeight(installPublicGo, 44);
-                _contentGos.Add(installPublicGo);
+                var (row_installPublicGo, installPublicGo, installPublicButton, installPublicImage, installPublicText) = UIFactory.CreateCompactButtonRow(
+                _content, "InstallPublicModsButton", Localization.Get("button.install_public_mods"), 20, 36f);
+                installPublicImage.color = ModsActionBg;
+                installPublicText.color = UIFactory.GetReadableTextColor(ModsActionBg);
+                _contentGos.Add(row_installPublicGo);
                 _installPublicModsButton = installPublicButton;
                 _installPublicModsButtonText = installPublicText;
                 installPublicButton.interactable = !_installPublicModsInProgress;
@@ -433,44 +527,44 @@ public class MapDetailsPanel : MonoBehaviour
                 hasDlls ? PositiveBadgeColor : NeutralBadgeColor);
             if (hasDlls)
             {
-                AddModsChecklist(dllNames, MapFileDistributor.IsDllModInstalled);
-                var (installGo, installButton, installImage, installText) =
-                    UIFactory.CreateButton(_content, "InstallModsButton",
-                        Localization.Get("button.install_additional_mods"), 20);
-                SetRowHeight(installGo, 44);
-                _contentGos.Add(installGo);
+                AddModRows(dllNames
+                    .Select(n => (Display: n, Folder: Path.GetFileNameWithoutExtension(n), ModLinksName: (string)null)));
+                var (row_installGo, installGo, installButton, installImage, installText) = UIFactory.CreateCompactButtonRow(
+                _content, "InstallModsButton", Localization.Get("button.install_additional_mods"), 20, 36f);
+                installImage.color = ModsActionBg;
+                installText.color = UIFactory.GetReadableTextColor(ModsActionBg);
+                _contentGos.Add(row_installGo);
                 _installModsButton = installButton;
                 _installModsButtonText = installText;
                 installButton.onClick.AddListener(() => OnInstallModsClicked(map));
             }
         }
 
-        var (modsFolderGo, modsFolderButton, modsFolderImage, modsFolderText) =
-            UIFactory.CreateButton(_content, "OpenModsFolderButton",
-                Localization.Get("button.open_mods_folder"), 18);
-        SetRowHeight(modsFolderGo, 36);
+        var (row_modsFolderGo, modsFolderGo, modsFolderButton, modsFolderImage, modsFolderText) = UIFactory.CreateCompactButtonRow(
+                _content, "OpenModsFolderButton", Localization.Get("button.open_mods_folder"), 18, 32f);
         modsFolderImage.color = DarkButtonBg;
         modsFolderText.color = UIFactory.GetReadableTextColor(DarkButtonBg);
-        _contentGos.Add(modsFolderGo);
+        _contentGos.Add(row_modsFolderGo);
         modsFolderButton.onClick.AddListener(OnOpenModsFolderClicked);
+
+        AddBackupsButton();
+
+        AddRestartSection();
 
         if (isDownloaded)
         {
             AddSpacer(16);
-            var (reinstallGo, reinstallButton, reinstallImage, reinstallText) =
-                UIFactory.CreateButton(_content, "ReinstallButton",
-                    Localization.Get("button.reinstall"), 18);
-            SetRowHeight(reinstallGo, ReinstallButtonHeight);
-            var reinstallRect = (RectTransform)reinstallGo.transform;
-            reinstallRect.anchorMin = new Vector2(0, reinstallRect.anchorMin.y);
-            reinstallRect.anchorMax = new Vector2(ReinstallButtonWidthFraction, reinstallRect.anchorMax.y);
+            var (row_reinstallGo, reinstallGo, reinstallButton, reinstallImage, reinstallText) = UIFactory.CreateCompactButtonRow(
+                _content, "ReinstallButton", Localization.Get("button.reinstall"), 18, 30f);
             reinstallImage.color = ReinstallRedBg;
             reinstallText.color = UIFactory.GetReadableTextColor(ReinstallRedBg);
-            _contentGos.Add(reinstallGo);
+            _contentGos.Add(row_reinstallGo);
             _reinstallButton = reinstallButton;
             _reinstallButtonText = reinstallText;
             reinstallButton.interactable = !_reinstallingMapKeys.Contains(map.Name);
             reinstallButton.onClick.AddListener(() => OnReinstallClicked(map));
+
+            AddDeleteMapButton(map);
         }
     }
 
@@ -487,11 +581,11 @@ public class MapDetailsPanel : MonoBehaviour
             switch (editor)
             {
                 case MapEditor.DecorationMaster:
-                    foldersToOpen.Add(Path.Combine(Application.dataPath, "Managed", "Mods", "DecorationMasterData"));
+                    foldersToOpen.Add(GamePaths.DecorationMasterDataFolder);
                     break;
                 case MapEditor.LegacyArchitect:
                 case MapEditor.NewArchitect:
-                    foldersToOpen.Add(Path.Combine(Application.persistentDataPath, "Architect"));
+                    foldersToOpen.Add(GamePaths.ArchitectDataFolder);
                     break;
             }
         }
@@ -518,7 +612,7 @@ public class MapDetailsPanel : MonoBehaviour
     {
         try
         {
-            string modsFolder = Path.GetFullPath(Path.Combine(Application.dataPath, "Managed", "Mods"));
+            string modsFolder = Path.GetFullPath(GamePaths.ModsFolder);
             if (!Directory.Exists(modsFolder)) Directory.CreateDirectory(modsFolder);
             SystemUtils.OpenFolderInExplorer(modsFolder);
         }
@@ -640,6 +734,473 @@ public class MapDetailsPanel : MonoBehaviour
         }
     }
 
+    // Состояние редакторов, нужных этой карте: установлен/включён, версия и кнопка действия.
+    // Показываются только редакторы из EditorModRegistry (Custom Mod / Custom Engine мы не ставим).
+    private void AddEditorsSection(MapRow map)
+    {
+        var editors = (map.Editors ?? new List<MapEditor>())
+            .Where(EditorModRegistry.IsManaged)
+            .Distinct()
+            .ToList();
+
+        if (editors.Count == 0) return;
+
+        AddSpacer(10);
+        AddBadge(Localization.Get("editors.section"), "", NeutralBadgeColor);
+
+        foreach (var editor in editors)
+            AddEditorRow(editor);
+
+        if (EditorModRegistry.ArchitectsConflict())
+            AddWrappedText(Localization.Get("editors.architect_conflict"), 15, BadRed);
+
+        // Версии ещё не установленных редакторов берутся из ModLinks — подтягиваем
+        // кэш в фоне и перерисовываем панель, когда он появится.
+        if (!PublicModInstaller.ManifestsLoaded)
+            _ = EnsureManifestsAsync();
+    }
+
+    private async Task EnsureManifestsAsync()
+    {
+        if (_manifestsRequested) return;
+        _manifestsRequested = true;
+
+        try
+        {
+            await PublicModInstaller.GetManifestsAsync();
+            if (_currentMap != null) RefreshContent();
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"Не удалось получить версии редакторов из ModLinks: {e.Message}");
+        }
+    }
+
+    private void AddEditorRow(MapEditor editor)
+    {
+        var info0 = EditorModRegistry.Find(editor);
+        var state = PendingModChanges.GetEffectiveState(info0?.FolderName);
+        bool pending = PendingModChanges.IsPending(info0?.FolderName);
+        string label = EditorConfig.GetLabel(editor);
+        var color = (Color32)EditorConfig.GetColor(editor);
+
+        string stateText;
+        Color stateColor;
+        string buttonKey;
+        switch (state)
+        {
+            case ModState.Enabled:
+                stateText = Localization.Get("editors.state.enabled");
+                stateColor = GoodGreen;
+                buttonKey = "editors.button.disable";
+                break;
+            case ModState.Disabled:
+                stateText = Localization.Get("editors.state.disabled");
+                stateColor = TxtNoticeYellow;
+                buttonKey = "editors.button.enable";
+                break;
+            default:
+                stateText = Localization.Get("editors.state.not_installed");
+                stateColor = BadRed;
+                buttonKey = "editors.button.install";
+                break;
+        }
+
+        string version = EditorModRegistry.GetInstalledVersion(editor);
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            var info = EditorModRegistry.Find(editor);
+            string available = PublicModInstaller.GetCachedManifest(info?.ModLinksName)?.Version;
+            version = string.IsNullOrWhiteSpace(available)
+                ? null
+                : Localization.Get("editors.version.available", available);
+        }
+        else
+        {
+            version = "v" + version;
+        }
+
+        string versionPart = version == null ? "" : $"  <color=#AAAAAA>{version}</color>";
+        if (pending) versionPart += $"  <color=#AAAAAA>({Localization.Get("mods.after_restart")})</color>";
+        AddWrappedText($"<color=#{ColorUtility.ToHtmlStringRGB(color)}>{label}</color>  —  " +
+                       $"<color=#{ColorUtility.ToHtmlStringRGB(stateColor)}>{stateText}</color>{versionPart}",
+                       16, Color.white);
+
+        var (rowGo, btnGo, button, image, text) = UIFactory.CreateCompactButtonRow(
+            _content, $"EditorButton_{editor}", Localization.Get(buttonKey), 15, 28f, 12f, 80f);
+        image.color = DarkButtonBg;
+        text.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+        _contentGos.Add(rowGo);
+
+        var capturedState = state;
+        button.interactable = !_editorActionInProgress;
+        button.onClick.AddListener(() =>
+        {
+            if (capturedState == ModState.NotInstalled)
+                OnEditorInstallClicked(editor, text);
+            else
+                OnEditorToggleClicked(editor, capturedState == ModState.Disabled);
+        });
+    }
+
+    // Включение/выключение — перенос папки мода между Mods и Mods/Disabled,
+    // игра подхватывает такие изменения только при запуске.
+    private void OnEditorToggleClicked(MapEditor editor, bool enable)
+    {
+        var info = EditorModRegistry.Find(editor);
+        string error = info == null
+            ? $"Редактор {editor} не поддерживает включение/выключение"
+            : ModFolderManager.SetEnabledOrDefer(info.FolderName, enable, out _);
+        RefreshContent();
+
+        if (error != null)
+        {
+            ShowNotification(Localization.Get("editors.action_failed", error), isError: true);
+            return;
+        }
+
+        string label = EditorConfig.GetLabel(editor);
+        ShowRestartStateNotification(
+            Localization.Get(enable ? "editors.enabled_restart" : "editors.disabled_restart", label));
+
+        if (EditorModRegistry.ArchitectsConflict())
+            ShowNotification(Localization.Get("editors.architect_conflict"), isError: true);
+    }
+
+    private async void OnEditorInstallClicked(MapEditor editor, Text buttonText)
+    {
+        if (_editorActionInProgress) return;
+
+        var info = EditorModRegistry.Find(editor);
+        if (info == null) return;
+
+        _editorActionInProgress = true;
+        if (buttonText != null) buttonText.text = Localization.Get("editors.installing");
+
+        var result = await PublicModInstaller.DownloadPublicModAsync(info.ModLinksName);
+
+        _editorActionInProgress = false;
+        RefreshContent();
+
+        string label = EditorConfig.GetLabel(editor);
+        if (result.Success)
+            ShowRestartStateNotification(Localization.Get("editors.installed_restart", label));
+        else
+            ShowNotification(Localization.Get("editors.install_failed", label, result.ErrorMessage), isError: true);
+    }
+
+    // Строка одного мода: имя, состояние и кнопка действия (установить / включить / выключить).
+    // modLinksName задан только для публичных модов — их можно доустановить прямо отсюда.
+    private void AddModRow(string displayName, string modFolderName, string modLinksName)
+    {
+        var state = PendingModChanges.GetEffectiveState(modFolderName);
+        bool pending = PendingModChanges.IsPending(modFolderName);
+
+        string stateText;
+        Color stateColor;
+        switch (state)
+        {
+            case ModState.Enabled:
+                stateText = Localization.Get("editors.state.enabled");
+                stateColor = GoodGreen;
+                break;
+            case ModState.Disabled:
+                stateText = Localization.Get("editors.state.disabled");
+                stateColor = TxtNoticeYellow;
+                break;
+            default:
+                stateText = Localization.Get("editors.state.not_installed");
+                stateColor = BadRed;
+                break;
+        }
+
+        string pendingMark = pending ? $"  <color=#AAAAAA>({Localization.Get("mods.after_restart")})</color>" : "";
+        AddWrappedText($"  • {displayName}  —  <color=#{ColorUtility.ToHtmlStringRGB(stateColor)}>{stateText}</color>{pendingMark}",
+                       15, Color.white);
+
+        // Неустановленные моды без имени в ModLinks ставятся общей кнопкой ниже
+        if (state == ModState.NotInstalled && string.IsNullOrEmpty(modLinksName))
+            return;
+
+        string buttonKey = state switch
+        {
+            ModState.Enabled => "editors.button.disable",
+            ModState.Disabled => "editors.button.enable",
+            _ => "editors.button.install"
+        };
+
+        var (rowGo, btnGo, button, image, text) = UIFactory.CreateCompactButtonRow(
+            _content, $"ModButton_{modFolderName}", Localization.Get(buttonKey), 14, 26f, 24f, 80f);
+        image.color = DarkButtonBg;
+        text.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+        _contentGos.Add(rowGo);
+
+        var capturedState = state;
+        button.interactable = !_editorActionInProgress;
+        button.onClick.AddListener(() =>
+        {
+            if (capturedState == ModState.NotInstalled)
+                OnSingleModInstallClicked(modLinksName, text);
+            else
+                OnModToggleClicked(displayName, modFolderName, capturedState == ModState.Disabled);
+        });
+    }
+
+    private void AddModRows(IEnumerable<(string Display, string Folder, string ModLinksName)> mods)
+    {
+        var list = mods.ToList();
+        if (list.Count == 0) return;
+
+        AddText(Localization.Get("mods.needed"), 15, TextAnchor.MiddleLeft, MutedGray, 20);
+        foreach (var m in list)
+            AddModRow(m.Display, m.Folder, m.ModLinksName);
+
+        int installed = list.Count(m => PendingModChanges.GetEffectiveState(m.Folder) != ModState.NotInstalled);
+        if (installed == list.Count)
+            AddText(Localization.Get("mods.all_installed"), 16, TextAnchor.MiddleLeft, GoodGreen, 26);
+        else
+            AddText(Localization.Get("mods.installed", installed, list.Count), 15, TextAnchor.MiddleLeft, MutedGray, 20);
+    }
+
+    private void OnModToggleClicked(string displayName, string modFolderName, bool enable)
+    {
+        string error = ModFolderManager.SetEnabledOrDefer(modFolderName, enable, out bool deferred);
+        RefreshContent();
+
+        if (error != null)
+        {
+            ShowNotification(Localization.Get("editors.action_failed", error), isError: true);
+            return;
+        }
+
+        ShowRestartStateNotification(
+            Localization.Get(enable ? "editors.enabled_restart" : "editors.disabled_restart", displayName));
+    }
+
+    private async void OnSingleModInstallClicked(string modLinksName, Text buttonText)
+    {
+        if (_editorActionInProgress || string.IsNullOrEmpty(modLinksName)) return;
+
+        _editorActionInProgress = true;
+        if (buttonText != null) buttonText.text = Localization.Get("editors.installing");
+
+        var result = await PublicModInstaller.DownloadPublicModAsync(modLinksName);
+
+        _editorActionInProgress = false;
+        RefreshContent();
+
+        if (result.Success)
+            ShowRestartStateNotification(Localization.Get("editors.installed_restart", modLinksName));
+        else
+            ShowNotification(Localization.Get("editors.install_failed", modLinksName, result.ErrorMessage), isError: true);
+    }
+
+    private void ShowRestartStateNotification(string changeMessage)
+    {
+        if (RestartTracker.IsRestartNeeded())
+            ShowNotification(changeMessage, isError: false);
+        else
+            ShowNotification(Localization.Get("restart.not_needed"), isError: false);
+    }
+
+    // Кнопка перезапуска: только когда состояние модов реально разошлось с исходным.
+    // Срабатывает по удержанию, чтобы её нельзя было нажать случайно.
+    private void AddRestartSection()
+    {
+        if (!RestartTracker.IsRestartNeeded()) return;
+
+        AddSpacer(14);
+        AddWrappedText(Localization.Get("restart.needed", RestartTracker.DescribeChanges()), 15, TxtNoticeYellow);
+
+        string idle = Localization.Get("restart.button_idle");
+        string holding = Localization.Get("restart.button_holding");
+
+        var (row_go, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+                _content, "RestartGameButton", idle, 18, 36f);
+        image.color = RestartButtonBg;
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = UIFactory.GetReadableTextColor(RestartButtonBg);
+
+        // Полоска заполнения — под текстом, поэтому добавляется первым потомком
+        var fillGo = new GameObject("Fill", typeof(RectTransform), typeof(Image));
+        fillGo.transform.SetParent(go.transform, false);
+        fillGo.transform.SetAsFirstSibling();
+        var fillRect = (RectTransform)fillGo.transform;
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = new Vector2(0f, 1f);
+        fillRect.offsetMin = Vector2.zero;
+        fillRect.offsetMax = Vector2.zero;
+        var fillImage = fillGo.GetComponent<Image>();
+        fillImage.color = RestartButtonFill;
+        fillImage.raycastTarget = false;
+
+        // Ширину фиксируем по самой длинной подписи, иначе кнопка "прыгает" при нажатии
+        UIFactory.FitButtonWidthForLabels(go, text, 120f, idle, holding);
+
+        var hold = go.AddComponent<HoldToConfirmButton>();
+        hold.Fill = fillImage;
+        hold.Label = text;
+        hold.IdleLabel = idle;
+        hold.HoldingLabel = holding;
+        hold.OnConfirmed = () =>
+        {
+            string error = GameRestarter.Restart();
+            if (error != null)
+                ShowNotification(Localization.Get("restart.failed", error), isError: true);
+        };
+
+        _contentGos.Add(row_go);
+    }
+
+    // Звёздочка избранного и ссылка на строку карты в самой таблице
+    // Шапка живёт вне прокручиваемого содержимого, поэтому обновляется отдельно
+    private void UpdateHeaderButtons()
+    {
+        bool hasMap = _currentMap != null;
+
+        if (_favoriteButton != null) _favoriteButton.interactable = hasMap;
+        if (_openSheetButton != null) _openSheetButton.interactable = hasMap;
+        if (_favoriteText == null || _favoriteImage == null) return;
+
+        bool favorite = hasMap && FavoritesStore.IsFavorite(_currentMap);
+        _favoriteText.text = Localization.Get(favorite ? "favorite.remove" : "favorite.add");
+        _favoriteImage.color = favorite ? FavoriteBg : DarkButtonBg;
+        _favoriteText.color = UIFactory.GetReadableTextColor(favorite ? FavoriteBg : DarkButtonBg);
+    }
+
+    private void OnFavoriteClicked()
+    {
+        if (_currentMap == null) return;
+
+        FavoritesStore.Toggle(_currentMap);
+        UpdateHeaderButtons();
+    }
+
+    private void OnOpenSheetClicked()
+    {
+        if (_currentMap == null) return;
+
+        SystemUtils.OpenUrl(SheetConfig.GetRowUrl(_currentMap.SheetRowNumber));
+    }
+
+    private string FormatKnownArchiveSize(MapRow map)
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager != null && manager.TryGetArchiveSize(map, out long bytes))
+        {
+            double mb = bytes / (1024.0 * 1024.0);
+            string size = mb >= 1 ? $"{mb:F1} МБ" : $"{bytes / 1024.0:F0} КБ";
+            return $"  ({size})";
+        }
+
+        return "";
+    }
+
+    private async Task EnsureArchiveSizeAsync(MapRow map)
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null || manager.TryGetArchiveSize(map, out _)) return;
+        if (!_sizeRequested.Add(map.Name)) return;
+
+        bool ok = await manager.FetchArchiveSizeAsync(map);
+        if (ok && _currentMap == map)
+            RefreshContent();
+    }
+
+    // Выключение карты: активные файлы редактора уезжают в бекап, редактор пустеет
+    private void AddUnloadButton(MapRow map)
+    {
+        var editors = map?.Editors;
+        if (editors == null || editors.Count == 0) return;
+        if (!MapFileDistributor.HasActiveFiles(editors)) return;
+
+        var (row_unloadGo, unloadGo, unloadButton, unloadImage, unloadText) = UIFactory.CreateCompactButtonRow(
+            _content, "UnloadMapButton", Localization.Get("button.unload_map"), 16, 30f);
+        unloadImage.color = ReinstallRedBg;
+        unloadText.color = UIFactory.GetReadableTextColor(ReinstallRedBg);
+        _contentGos.Add(row_unloadGo);
+
+        unloadButton.onClick.AddListener(() => OnUnloadClicked(map));
+    }
+
+    private void OnUnloadClicked(MapRow map)
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null) return;
+
+        string error = manager.UnloadMap(map);
+        RefreshContent();
+
+        if (error == null)
+            ShowNotification(Localization.Get("unload.done"), isError: false);
+        else if (error == "NOTHING")
+            ShowNotification(Localization.Get("unload.nothing"), isError: false);
+        else
+            ShowNotification(Localization.Get("unload.failed", error), isError: true);
+    }
+
+    private void AddBackupsButton()
+    {
+        var (row_go, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+                _content, "BackupsButton", Localization.Get("button.backups"), 16, 30f);
+        image.color = DarkButtonBg;
+        text.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+        _contentGos.Add(row_go);
+
+        button.onClick.AddListener(() => BackupsPopup.Show(_canvasRoot, RefreshContent));
+    }
+
+    // Удаление скачанных файлов карты — по удержанию, чтобы не снести их случайно
+    private void AddDeleteMapButton(MapRow map)
+    {
+        string idle = Localization.Get("delete.button_idle");
+        string holding = Localization.Get("delete.button_holding");
+
+        var (row_go, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+                _content, "DeleteMapButton", idle, 16, 30f);
+        image.color = DeleteCrimsonBg;
+        text.color = UIFactory.GetReadableTextColor(DeleteCrimsonBg);
+        text.alignment = TextAnchor.MiddleCenter;
+
+        var fillGo = new GameObject("Fill", typeof(RectTransform), typeof(Image));
+        fillGo.transform.SetParent(go.transform, false);
+        fillGo.transform.SetAsFirstSibling();
+        var fillRect = (RectTransform)fillGo.transform;
+        fillRect.anchorMin = Vector2.zero;
+        fillRect.anchorMax = new Vector2(0f, 1f);
+        fillRect.offsetMin = Vector2.zero;
+        fillRect.offsetMax = Vector2.zero;
+        var fillImage = fillGo.GetComponent<Image>();
+        fillImage.color = DeleteCrimsonFill;
+        fillImage.raycastTarget = false;
+
+        // Ширину фиксируем по самой длинной подписи, иначе кнопка "прыгает" при нажатии
+        UIFactory.FitButtonWidthForLabels(go, text, 120f, idle, holding);
+
+        var hold = go.AddComponent<HoldToConfirmButton>();
+        hold.Fill = fillImage;
+        hold.Label = text;
+        hold.IdleLabel = idle;
+        hold.HoldingLabel = holding;
+        hold.OnConfirmed = () =>
+        {
+            var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+            // DeleteMapFiles возвращает null при успехе, поэтому отсутствие менеджера
+            // проверяем отдельно — иначе успешное удаление выглядело бы как ошибка
+            string error = manager == null
+                ? "Менеджер загрузки недоступен"
+                : manager.DeleteMapFiles(map);
+            RefreshContent();
+
+            if (error != null)
+                ShowNotification(Localization.Get("delete.failed", error), isError: true);
+            else
+                ShowNotification(Localization.Get("delete.done", map.Name), isError: false);
+        };
+
+        _contentGos.Add(row_go);
+    }
+
     private void AddModsChecklist(List<string> neededNames, Func<string, bool> isInstalled)
     {
         if (neededNames == null || neededNames.Count == 0) return;
@@ -708,6 +1269,32 @@ public class MapDetailsPanel : MonoBehaviour
         SetRowHeight(panel.gameObject, preferredTextHeight + verticalPadding * 2f);
         _contentGos.Add(panel.gameObject);
     }
+    private Text AddWrappedText(string text, int fontSize, Color color, TextAnchor anchor = TextAnchor.UpperLeft)
+    {
+        var t = UIFactory.CreateText(_content, "Text", text, fontSize, anchor);
+        t.color = color;
+        t.horizontalOverflow = HorizontalWrapMode.Wrap;
+        t.verticalOverflow = VerticalWrapMode.Overflow;
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_content);
+
+        var layoutGroup = _content.GetComponent<VerticalLayoutGroup>();
+        float contentHorizontalPadding = layoutGroup != null
+            ? layoutGroup.padding.left + layoutGroup.padding.right
+            : 0f;
+
+        float textWidth = Mathf.Max(_content.rect.width - contentHorizontalPadding, 1f);
+
+        var generator = new TextGenerator();
+        var settings = t.GetGenerationSettings(new Vector2(textWidth, 0f));
+        settings.generateOutOfBounds = true;
+        float height = generator.GetPreferredHeight(text, settings);
+
+        SetRowHeight(t.gameObject, height + 4f);
+        _contentGos.Add(t.gameObject);
+        return t;
+    }
+
     private Text AddText(string text, int fontSize, TextAnchor anchor, Color color, float height)
     {
         var t = UIFactory.CreateText(_content, "Text", text, fontSize, anchor);

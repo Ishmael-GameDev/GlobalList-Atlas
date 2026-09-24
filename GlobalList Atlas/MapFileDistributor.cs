@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
 using GlobalListAtlas.Configuration;
+using GlobalListAtlas.Logging;
 using GlobalListAtlas.Maps;
 
 namespace GlobalListAtlas.Install;
@@ -188,6 +189,91 @@ public static class MapFileDistributor
         }
 
         return copied;
+    }
+
+    public static string GetEditorFolder(MapEditor editor) => editor switch
+    {
+        MapEditor.DecorationMaster => DecorationMasterJsonFolder,
+        MapEditor.LegacyArchitect => LegacyArchitectJsonFolder,
+        MapEditor.NewArchitect => NewArchitectJsonFolder,
+        _ => null
+    };
+
+    public static void BackupCurrentEditorFiles(string editorFolder, string label) =>
+        BackupExistingFiles(editorFolder, label);
+
+    public static int RemoveMapFilesFromEditors(string extractedArchiveFolder, List<MapEditor> editors)
+    {
+        if (editors == null || editors.Count == 0 || !Directory.Exists(extractedArchiveFolder))
+            return 0;
+
+        var sourceFiles = CollectFilesDeduped(extractedArchiveFolder, null);
+        if (sourceFiles.Count == 0)
+            return 0;
+
+        int removed = 0;
+
+        foreach (var editor in editors.Distinct())
+        {
+            string editorFolder = GetEditorFolder(editor);
+            if (editorFolder == null || !Directory.Exists(editorFolder))
+                continue;
+
+            foreach (var targetPath in Directory.GetFiles(editorFolder, "*", SearchOption.AllDirectories))
+            {
+                // Бекапы — это история, удаление карты их не касается
+                string relative = targetPath.Substring(editorFolder.Length)
+                    .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        .Any(part => part.StartsWith("GlobalistInstaller_backup_", StringComparison.OrdinalIgnoreCase)
+                                  || part.StartsWith("backup_", StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                if (!sourceFiles.TryGetValue(Path.GetFileName(targetPath), out var sourcePath))
+                    continue;
+
+                try
+                {
+                    if (new FileInfo(sourcePath).Length != new FileInfo(targetPath).Length)
+                        continue;
+
+                    File.Delete(targetPath);
+                    removed++;
+                }
+                catch (Exception e)
+                {
+                    Log.Warn($"Не удалось удалить файл карты из папки редактора ({targetPath}): {e.Message}");
+                }
+            }
+
+            RemoveEmptyDirectories(editorFolder);
+        }
+
+        if (removed > 0)
+            Log.Info($"Из папок редакторов удалено файлов карты: {removed}");
+
+        return removed;
+    }
+
+    // После удаления файлов остаются пустые подпапки (актуально для New Architect)
+    private static void RemoveEmptyDirectories(string root)
+    {
+        foreach (var dir in Directory.GetDirectories(root))
+        {
+            string name = Path.GetFileName(dir);
+            if (name.StartsWith("GlobalistInstaller_backup_", StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("backup_", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            RemoveEmptyDirectories(dir);
+
+            try
+            {
+                if (Directory.GetFileSystemEntries(dir).Length == 0)
+                    Directory.Delete(dir);
+            }
+            catch { /* папка занята или недоступна — оставляем как есть */ }
+        }
     }
 
     public static bool IsMapCurrentlyActive(string extractedArchiveFolder, List<MapEditor> editors)
@@ -382,6 +468,45 @@ public static class MapFileDistributor
         }
 
         return result;
+    }
+
+    public static int UnloadEditors(IEnumerable<MapEditor> editors)
+    {
+        int cleared = 0;
+
+        foreach (var editor in editors.Distinct())
+        {
+            string folder = GetEditorFolder(editor);
+            if (folder == null || !Directory.Exists(folder))
+                continue;
+
+            BackupExistingFiles(folder, $"выключение карты ({EditorConfig.GetLabel(editor)})");
+            cleared++;
+        }
+
+        return cleared;
+    }
+
+    public static bool HasActiveFiles(IEnumerable<MapEditor> editors)
+    {
+        foreach (var editor in editors.Distinct())
+        {
+            string folder = GetEditorFolder(editor);
+            if (folder == null || !Directory.Exists(folder))
+                continue;
+
+            if (Directory.GetFiles(folder).Length > 0)
+                return true;
+
+            bool hasNonBackupDir = Directory.GetDirectories(folder)
+                .Select(Path.GetFileName)
+                .Any(name => !name.StartsWith("GlobalistInstaller_backup_", StringComparison.OrdinalIgnoreCase)
+                          && !name.StartsWith("backup_", StringComparison.OrdinalIgnoreCase));
+
+            if (hasNonBackupDir) return true;
+        }
+
+        return false;
     }
 
     private static void BackupExistingFiles(string targetFolder, string label)

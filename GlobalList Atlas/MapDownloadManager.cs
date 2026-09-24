@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -261,6 +261,159 @@ public class MapDownloadManager
         outcome.Success = true;
         Modding.Logger.Log($"[Панель] Карта '{map.Name}' запущена (файлы разложены по папке редактора)");
         return outcome;
+    }
+
+    public List<MapRow> CachedMaps => _cachedAllMaps;
+
+    // Размеры архивов, узнанные заранее по заголовкам ответа Google Drive
+    private readonly Dictionary<string, long> _archiveSizes = new();
+
+    public bool TryGetArchiveSize(MapRow map, out long bytes)
+    {
+        bytes = 0;
+        return map != null && _archiveSizes.TryGetValue(map.Name, out bytes);
+    }
+
+    public async Task<bool> FetchArchiveSizeAsync(MapRow map)
+    {
+        if (map == null || string.IsNullOrEmpty(map.DriveUrl))
+            return false;
+
+        if (_archiveSizes.ContainsKey(map.Name))
+            return true;
+
+        long? size = await FetchDriveFileSizeAsync(map.DriveUrl);
+        if (size == null || size.Value <= 0)
+            return false;
+
+        _archiveSizes[map.Name] = size.Value;
+        return true;
+    }
+
+    // Размер файла на Drive без скачивания. Логика намеренно самостоятельная,
+    // чтобы не зависеть от набора методов в GoogleDriveDownloader.
+    private static async Task<long?> FetchDriveFileSizeAsync(string driveUrl)
+    {
+        string fileId = GoogleDriveDownloader.ExtractFileId(driveUrl);
+        if (fileId == null) return null;
+
+        try
+        {
+            using var handler = new System.Net.Http.HttpClientHandler
+            {
+                CookieContainer = new System.Net.CookieContainer(),
+                AllowAutoRedirect = true
+            };
+            using var client = new System.Net.Http.HttpClient(handler);
+            client.DefaultRequestHeaders.Add("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+            var response = await client.GetAsync($"https://drive.google.com/uc?export=download&id={fileId}",
+                System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+
+            // Для больших файлов Drive отдаёт страницу подтверждения, реальный размер за ней
+            if ((response.Content.Headers.ContentType?.MediaType ?? "").Contains("text/html"))
+            {
+                string html = await response.Content.ReadAsStringAsync();
+                string confirmUrl = BuildConfirmUrl(html, fileId);
+                response = await client.GetAsync(confirmUrl, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+            }
+
+            return response.IsSuccessStatusCode ? response.Content.Headers.ContentLength : null;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"Не удалось узнать размер файла Drive id={fileId}: {e.Message}");
+            return null;
+        }
+    }
+
+    // Собирает ссылку из формы подтверждения ("не удалось проверить на вирусы")
+    private static string BuildConfirmUrl(string html, string fileId)
+    {
+        var formMatch = System.Text.RegularExpressions.Regex.Match(
+            html, "<form[^>]*action=[\"']([^\"']+)[\"']",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        string actionUrl = formMatch.Success
+            ? System.Net.WebUtility.HtmlDecode(formMatch.Groups[1].Value)
+            : "https://drive.usercontent.google.com/download";
+
+        var parameters = new Dictionary<string, string>
+        {
+            ["id"] = fileId,
+            ["export"] = "download",
+            ["confirm"] = "t"
+        };
+
+        foreach (System.Text.RegularExpressions.Match input in System.Text.RegularExpressions.Regex.Matches(
+                     html, "<input[^>]+>", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            var name = System.Text.RegularExpressions.Regex.Match(input.Value, "name=[\"']([^\"']+)[\"']",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!name.Success) continue;
+
+            var value = System.Text.RegularExpressions.Regex.Match(input.Value, "value=[\"']([^\"']*)[\"']",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            parameters[System.Net.WebUtility.HtmlDecode(name.Groups[1].Value)] =
+                value.Success ? System.Net.WebUtility.HtmlDecode(value.Groups[1].Value) : "";
+        }
+
+        string query = string.Join("&", parameters.Select(kvp =>
+            $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
+
+        return actionUrl + (actionUrl.Contains("?") ? "&" : "?") + query;
+    }
+
+    public string DeleteMapFiles(MapRow map)
+    {
+        if (map == null) return "Карта не выбрана";
+
+        string folder = GetTargetFolder(map);
+        if (!Directory.Exists(folder))
+            return "Файлы карты не найдены";
+
+        try
+        {
+            // Если карта сейчас запущена, её файлы лежат ещё и в папках редакторов
+            if (MapFileDistributor.IsMapCurrentlyActive(folder, map.Editors))
+                MapFileDistributor.RemoveMapFilesFromEditors(folder, map.Editors);
+
+            Directory.Delete(folder, recursive: true);
+            _archiveSizes.Remove(map.Name);
+            Maps.ActiveMapResolver.Invalidate();
+            Log.Info($"Файлы карты '{map.Name}' удалены: {folder}");
+            return null;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Не удалось удалить файлы карты '{map.Name}': {e.Message}");
+            return e.Message;
+        }
+    }
+
+    public string UnloadMap(MapRow map)
+    {
+        var editors = map?.Editors != null && map.Editors.Count > 0
+            ? map.Editors
+            : EditorModRegistry.Entries.Select(e => e.Editor).ToList();
+
+        if (!MapFileDistributor.HasActiveFiles(editors))
+            return "NOTHING";
+
+        try
+        {
+            int cleared = MapFileDistributor.UnloadEditors(editors);
+            Maps.ActiveMapResolver.Invalidate();
+            Log.Info($"Карта выключена, очищено папок редакторов: {cleared}");
+            return null;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Не удалось выключить карту: {e.Message}");
+            return e.Message;
+        }
     }
 
     public DllInstallResult InstallAdditionalMods(MapRow map)

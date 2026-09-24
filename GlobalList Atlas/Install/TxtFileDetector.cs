@@ -1,12 +1,16 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace GlobalListAtlas.Install;
 
-// Ищет .txt файлы во всем дереве распакованного архива карты
+// Ищет текстовые файлы (.txt, .md) во всём дереве распакованного архива карты.
+// Файл с именем "readme" (любое расширение из списка) помечается отдельно.
 public static class TxtFileDetector
 {
+    public static readonly string[] TextExtensions = { ".txt", ".md" };
+
     public class Result
     {
         public List<string> FileNames = new();
@@ -19,14 +23,17 @@ public static class TxtFileDetector
         if (!Directory.Exists(extractedArchiveFolder))
             return result;
 
-        foreach (var filePath in Directory.GetFiles(extractedArchiveFolder, "*.txt", SearchOption.AllDirectories))
+        var files = Directory.GetFiles(extractedArchiveFolder, "*", SearchOption.AllDirectories)
+            .Where(f => TextExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase));
+
+        foreach (var filePath in files)
         {
-            string fileName = Path.GetFileName(filePath);
-            result.FileNames.Add(fileName);
+            result.FileNames.Add(Path.GetFileName(filePath));
 
             string nameNoExt = Path.GetFileNameWithoutExtension(filePath);
             if (nameNoExt.Equals("readme", StringComparison.OrdinalIgnoreCase) ||
-                nameNoExt.Equals("read me", StringComparison.OrdinalIgnoreCase))
+                nameNoExt.Equals("read me", StringComparison.OrdinalIgnoreCase) ||
+                nameNoExt.Equals("read_me", StringComparison.OrdinalIgnoreCase))
             {
                 result.HasReadmeNamed = true;
             }

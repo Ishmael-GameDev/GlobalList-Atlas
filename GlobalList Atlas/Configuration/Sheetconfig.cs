@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using UnityEngine;
 
 namespace GlobalListAtlas.Configuration;
@@ -27,6 +27,9 @@ public static class SheetConfig
     public const string VerificationDateColumn = "M";
 
     public const int MaxMapSlots = 10;
+
+    public static string GetRowUrl(int sheetRowNumber) =>
+        $"https://docs.google.com/spreadsheets/d/{SheetId}/edit?gid={Gid}#gid={Gid}&range=A{sheetRowNumber}";
 
     public static string GetMapsRootFolder()
     {

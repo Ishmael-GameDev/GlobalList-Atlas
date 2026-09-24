@@ -18,13 +18,14 @@ public enum MapEditor
 // Реестр редакторов карт (столбец F таблицы) и их цветов
 public static class EditorConfig
 {
+    // Разделитель редакторов внутри одной ячейки столбца F (совпадает с разделителем тегов)
     public const string EditorSeparator = ", ";
     public static readonly (MapEditor Editor, string Label, Color32 Color)[] Palette =
     {
         (MapEditor.DecorationMaster, "Decoration Master", new Color32(0xBF, 0xE1, 0xF6, 0xFF)),
         (MapEditor.LegacyArchitect,  "Legacy Architect",  new Color32(0xC6, 0xDB, 0xE1, 0xFF)),
         (MapEditor.NewArchitect,     "New Architect",     new Color32(0xE6, 0xCF, 0xF2, 0xFF)),
-        (MapEditor.CustomMod,        "Custom Mod",        new Color32(0xE6, 0xE6, 0xE6, 0xFF)),
+        (MapEditor.CustomMod,        "Custom Mod",        new Color32(0xE6, 0xE6, 0xE6, 0xFF)), 
         (MapEditor.CustomEngine,     "Custom Engine",     new Color32(0xFF, 0x9A, 0x8D, 0xFF)),
     };
 

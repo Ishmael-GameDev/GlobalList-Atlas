@@ -1,48 +1,33 @@
-﻿using System.Collections.Generic;
-using System.IO;
-using UnityEngine;
-using GlobalListAtlas.Configuration;
 using System;
+using System.Collections.Generic;
+using System.IO;
+using GlobalListAtlas.Configuration;
+using GlobalListAtlas.Logging;
+using GlobalListAtlas.Util;
 
 namespace GlobalListAtlas.Install;
 
-// Определяет, какие из трех известных редакторов карт установлены у игрока
+// Определяет, какие из трёх известных редакторов карт установлены у игрока.
+// Проверка по конкретным dll: так однозначно различаются Legacy Architect
+// (Architect.dll) и New Architect (Architect_HK.dll).
 public static class EditorInstallDetector
 {
-    private static readonly string DecorationMasterDll = Path.Combine("Mods", "DecorationMaster", "DecorationMaster.dll");
-    private static readonly string ArchitectLegacyDll = Path.Combine("Mods", "ArchitectLegacy", "Architect.dll");
-    private static readonly string ArchitectDll = Path.Combine("Mods", "Architect", "Architect_HK.dll");
+    private static readonly string DecorationMasterDll = Path.Combine("DecorationMaster", "DecorationMaster.dll");
+    private static readonly string ArchitectLegacyDll = Path.Combine("ArchitectLegacy", "Architect.dll");
+    private static readonly string ArchitectDll = Path.Combine("Architect", "Architect_HK.dll");
 
-    private static bool IsDllInstalled(string relativeDllPath)
+    private static bool IsDllInstalled(string dllPathInModsFolder)
     {
         try
         {
-            string fullPath = Path.Combine(Application.dataPath, "Managed", relativeDllPath);
-
-            if (!File.Exists(fullPath))
-            {
-                UnityEngine.Debug.Log($"[MapDownloader] DLL не найден: {relativeDllPath}");
-                return false;
-            }
-
-            var dir = new DirectoryInfo(Path.GetDirectoryName(fullPath));
-            while (dir != null)
-            {
-                if (string.Equals(dir.Name, "Disabled", StringComparison.OrdinalIgnoreCase))
-                {
-                    UnityEngine.Debug.Log($"[MapDownloader] DLL найден, но пропущен (находится в Disabled): {relativeDllPath}");
-                    return false;
-                }
-
-                dir = dir.Parent;
-            }
-
-            UnityEngine.Debug.Log($"[MapDownloader] DLL успешно найден и активен: {relativeDllPath}");
-            return true;
+            string fullPath = Path.Combine(GamePaths.ModsFolder, dllPathInModsFolder);
+            bool exists = File.Exists(fullPath);
+            Log.Info($"[EditorInstallDetector] {dllPathInModsFolder}: {(exists ? "найден" : "не найден")}");
+            return exists;
         }
         catch (Exception ex)
         {
-            UnityEngine.Debug.LogError($"[MapDownloader] Ошибка при проверке DLL {relativeDllPath}: {ex.Message}");
+            Log.Error($"[EditorInstallDetector] Ошибка при проверке {dllPathInModsFolder}: {ex.Message}");
             return false;
         }
     }

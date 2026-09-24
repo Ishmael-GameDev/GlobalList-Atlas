@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using GlobalEnums;
 using UnityEngine;
 using UnityEngine.UI;
+using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.UI;
 
@@ -67,7 +68,7 @@ internal static class MainMenuButtonManager
         scaler.referenceResolution = new Vector2(1920, 1080);
         scaler.matchWidthOrHeight = 0.5f;
 
-        var buttonGo = new GameObject("GlobalistButton", typeof(RectTransform), typeof(Image), typeof(Button));
+        var buttonGo = new GameObject("GlobalListButton", typeof(RectTransform), typeof(Image), typeof(Button));
         buttonGo.transform.SetParent(_buttonCanvasGo.transform, false);
 
         var rect = buttonGo.GetComponent<RectTransform>();
@@ -94,12 +95,12 @@ internal static class MainMenuButtonManager
         if (sprite != null)
         {
             _buttonImage.sprite = sprite;
-            Modding.Logger.Log("[MainMenuButtonManager] Спрайт Global.png успешно загружен");
+            Log.Info("[MainMenuButtonManager] Спрайт Global.png успешно загружен");
         }
         else
         {
             _buttonImage.color = new Color(0.15f, 0.15f, 0.18f, 0.9f);
-            Modding.Logger.Log("[MainMenuButtonManager] Спрайт Global.png не найден. Используется цветной фон.");
+            Log.Warn("[MainMenuButtonManager] Спрайт Global.png не найден. Используется цветной фон.");
         }
     }
 
@@ -113,7 +114,7 @@ internal static class MainMenuButtonManager
 
             if (string.IsNullOrEmpty(resourceName))
             {
-                Modding.Logger.Log($"[MainMenuButtonManager] Ресурс Global.png не найден. Доступные ресурсы: {string.Join(", ", assembly.GetManifestResourceNames())}");
+                Log.Warn($"[MainMenuButtonManager] Ресурс Global.png не найден. Доступные ресурсы: {string.Join(", ", assembly.GetManifestResourceNames())}");
                 return null;
             }
 
@@ -121,7 +122,7 @@ internal static class MainMenuButtonManager
             {
                 if (stream == null)
                 {
-                    Modding.Logger.Log("[MainMenuButtonManager] Не удалось получить поток для ресурса Global.png");
+                    Log.Error("[MainMenuButtonManager] Не удалось получить поток для ресурса Global.png");
                     return null;
                 }
 
@@ -137,7 +138,7 @@ internal static class MainMenuButtonManager
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"[MainMenuButtonManager] Ошибка загрузки спрайта: {e.Message}");
+            Log.Error($"[MainMenuButtonManager] Ошибка загрузки спрайта: {e.Message}");
             return null;
         }
     }

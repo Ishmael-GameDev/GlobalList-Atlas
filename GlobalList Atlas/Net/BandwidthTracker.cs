@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 
 namespace GlobalListAtlas.Net;
 
-// Общий счетчик скорости для всех одновременных загрузок
 public static class BandwidthTracker
 {
     private static readonly ConcurrentQueue<(DateTime Time, long Bytes)> Samples = new();

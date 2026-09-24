@@ -1,26 +1,48 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using UnityEngine;
+using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.Utility;
 
 // Утилиты для работы с операционной системой
 public static class SystemUtils
 {
+    // Открывает ссылку в браузере по умолчанию
+    public static void OpenUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url))
+        {
+            Log.Warn("Попытка открыть пустую ссылку.");
+            return;
+        }
+
+        try
+        {
+            // Application.OpenURL сам выбирает браузер по умолчанию на всех платформах
+            Application.OpenURL(url);
+            Log.Info($"Открыта ссылка: {url}");
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Не удалось открыть ссылку {url}: {e.Message}");
+        }
+    }
+
     // Открывает указанную папку в системном файловом менеджере
     public static void OpenFolderInExplorer(string path)
     {
         if (string.IsNullOrEmpty(path))
         {
-            Modding.Logger.Log("Попытка открыть пустой путь.");
+            Log.Warn("Попытка открыть пустой путь.");
             return;
         }
 
         if (!Directory.Exists(path))
         {
-            Modding.Logger.Log($"Папка не существует и не может быть открыта: {path}");
+            Log.Warn($"Папка не существует и не может быть открыта: {path}");
             return;
         }
 
@@ -47,11 +69,11 @@ public static class SystemUtils
                 Application.OpenURL("file://" + path);
             }
 
-            Modding.Logger.Log($"Успешно открыта папка в проводнике: {path}");
+            Log.Info($"Успешно открыта папка в проводнике: {path}");
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"Ошибка при открытии проводника для пути {path}: {e.Message}");
+            Log.Error($"Ошибка при открытии проводника для пути {path}: {e.Message}");
 
             try
             {
@@ -59,7 +81,7 @@ public static class SystemUtils
             }
             catch (Exception fallbackEx)
             {
-                Modding.Logger.Log($"Резервный метод через Unity также завершился ошибкой: {fallbackEx.Message}");
+                Log.Error($"Резервный метод через Unity также завершился ошибкой: {fallbackEx.Message}");
             }
         }
     }

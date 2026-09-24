@@ -1,4 +1,5 @@
-﻿using InControl;
+using System.Collections.Generic;
+using InControl;
 using Modding.Converters;
 using Newtonsoft.Json;
 
@@ -13,19 +14,7 @@ public class GlobalSettings
 
     public string CurrentLanguage = "en";
 
-}
+    // Названия карт, отмеченных звёздочкой (столбец A таблицы)
+    public List<string> FavoriteMaps = new();
 
-public class KeyBinds : PlayerActionSet
-{
-    public readonly PlayerAction DownloadMap;
-    public readonly PlayerAction ToggleMapList;
-
-    public KeyBinds()
-    {
-        DownloadMap = CreatePlayerAction("Download Map");
-        DownloadMap.AddDefaultBinding(Key.F6);
-
-        ToggleMapList = CreatePlayerAction("Toggle Map List");
-        ToggleMapList.AddDefaultBinding(Key.F7);
-    }
 }

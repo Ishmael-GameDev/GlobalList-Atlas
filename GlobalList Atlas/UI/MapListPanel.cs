@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -8,6 +8,7 @@ using GlobalListAtlas.Maps;
 using GlobalListAtlas.Net;
 using UnityEngine;
 using UnityEngine.UI;
+using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.UI;
 
@@ -30,9 +31,15 @@ public class MapListPanel : MonoBehaviour
     private const float StatusBarHeight = 22f;
     private const float FilterRowHeight = 40f;
     private const float CatalogProgressBarHeight = 22f;
+    private const float SearchRowHeight = 28f;
+    private const float ActiveMapsRowHeight = 20f;
     private const float RowGap = 4f;
+    private const float FavoritesButtonSize = 30f;
+    private const string FavoritesGlyph = "♥";
+
     private const float TopReservedHeight =
-        StatusBarHeight + RowGap + FilterRowHeight + RowGap + CatalogProgressBarHeight + RowGap;
+        StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap +
+        FilterRowHeight + RowGap + FavoritesButtonSize + RowGap + CatalogProgressBarHeight + RowGap;
     private const float CatalogRetryIntervalSeconds = 3f;
     private const float StatusBarUpdateIntervalSeconds = 0.5f;
 
@@ -44,6 +51,11 @@ public class MapListPanel : MonoBehaviour
     private RectTransform _listContent;
     private ScrollRect _scrollRect;
     private Text _statusBarText;
+    private Text _activeMapsText;
+    private float _activeMapsTimer;
+    private string _searchQuery = "";
+    private bool _favoritesOnly;
+    private (Button Button, Image Image) _favoritesButton;
     private float _statusBarTimer;
     private GameObject _catalogProgressGo;
     private Image _catalogProgressFill;
@@ -222,6 +234,9 @@ public class MapListPanel : MonoBehaviour
 
     public void Close()
     {
+        // Панель закрывается вместе со всеми окнами поверх неё
+        PopupStack.CloseAll();
+
         _isOpen = false;
         if (_canvasGo != null)
             _canvasGo.SetActive(false);
@@ -258,7 +273,7 @@ public class MapListPanel : MonoBehaviour
         catch (Exception e)
         {
             _loadError = e.Message;
-            Modding.Logger.Log($"[Список карт] Не удалось загрузить каталог: {e.Message}. " +
+            Log.Warn($"[Список карт] Не удалось загрузить каталог: {e.Message}. " +
                                 $"Повтор через {CatalogRetryIntervalSeconds:F0} с...");
         }
         finally
@@ -356,11 +371,6 @@ public class MapListPanel : MonoBehaviour
 
     private void Update()
     {
-        if (_isOpen && UnityEngine.Input.GetKeyDown(KeyCode.Escape))
-        {
-            Close();
-            return;
-        }
         if (!_networkSubscribed && NetworkMonitor.Instance != null)
         {
             NetworkMonitor.Instance.OnlineStateChanged += OnNetworkOnlineStateChanged;
@@ -371,7 +381,16 @@ public class MapListPanel : MonoBehaviour
             GlobalListAtlasMod.Instance.DownloadManager.CatalogLoadProgressChanged += OnCatalogLoadProgressChanged;
             _progressSubscribed = true;
         }
+        // Escape закрывает сначала верхнее окно (фильтр, бекапы, справка), и только
+        // когда окон не осталось — сами панели
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            if (PopupStack.CloseTop()) return;
+            if (_isOpen) { Close(); return; }
+        }
+
         UpdateStatusBar();
+        UpdateActiveMapsRow();
         if (!_isOpen) return;
         var inputActions = GameManager.instance?.inputHandler?.inputActions;
         if (inputActions == null) return;
@@ -390,6 +409,22 @@ public class MapListPanel : MonoBehaviour
         else if (_heldDirection == -1 && !inputActions.up.IsPressed)
             StopHold();
         UpdateHoldRepeat();
+    }
+
+    private void UpdateActiveMapsRow()
+    {
+        if (_activeMapsText == null) return;
+
+        _activeMapsTimer += Time.unscaledDeltaTime;
+        if (_activeMapsTimer < 1f) return;
+        _activeMapsTimer = 0f;
+
+        string active = ActiveMapResolver.DescribeActiveMaps();
+        _activeMapsText.text = active == null
+            ? Localization.Get("list.nothing_launched")
+            : $"{Localization.Get("list.launched_now")}: {active}";
+        // Цвета редактора и лиги приходят в самой строке rich-текстом
+        _activeMapsText.color = active == null ? new Color(0.6f, 0.6f, 0.6f) : Color.white;
     }
 
     private void UpdateStatusBar()
@@ -545,6 +580,37 @@ public class MapListPanel : MonoBehaviour
             }
         });
 
+        // Что сейчас запущено и в каком редакторе
+        var activeRow = new GameObject("ActiveMapsRow", typeof(RectTransform));
+        activeRow.transform.SetParent(panel, false);
+        var activeRect = (RectTransform)activeRow.transform;
+        activeRect.anchorMin = new Vector2(0, 1);
+        activeRect.anchorMax = new Vector2(1, 1);
+        activeRect.pivot = new Vector2(0.5f, 1);
+        activeRect.sizeDelta = new Vector2(0, ActiveMapsRowHeight);
+        activeRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap));
+
+        _activeMapsText = UIFactory.CreateText(activeRect, "Text", "", 13, TextAnchor.MiddleLeft);
+        var activeTextRect = (RectTransform)_activeMapsText.transform;
+        activeTextRect.anchorMin = Vector2.zero;
+        activeTextRect.anchorMax = Vector2.one;
+        activeTextRect.offsetMin = new Vector2(4, 0);
+        activeTextRect.offsetMax = new Vector2(-4, 0);
+
+        // Поиск по названию и автору
+        var (searchGo, searchInput) = UIFactory.CreateInputField(panel, "SearchField", Localization.Get("list.search_placeholder"), 15);
+        var searchRect = (RectTransform)searchGo.transform;
+        searchRect.anchorMin = new Vector2(0, 1);
+        searchRect.anchorMax = new Vector2(1, 1);
+        searchRect.pivot = new Vector2(0.5f, 1);
+        searchRect.sizeDelta = new Vector2(0, SearchRowHeight);
+        searchRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap));
+        searchInput.onValueChanged.AddListener(value =>
+        {
+            _searchQuery = value ?? "";
+            RefreshVisibility();
+        });
+
         var filterRow = new GameObject("FilterRow", typeof(RectTransform));
         filterRow.transform.SetParent(panel, false);
         var filterRowRect = (RectTransform)filterRow.transform;
@@ -552,19 +618,40 @@ public class MapListPanel : MonoBehaviour
         filterRowRect.anchorMax = new Vector2(1, 1);
         filterRowRect.pivot = new Vector2(0.5f, 1);
         filterRowRect.sizeDelta = new Vector2(0, FilterRowHeight);
-        filterRowRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap));
+        filterRowRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap));
         const float filterButtonGap = 4f;
-        const int filterSlotCount = 5;
+        // Ширины слотов: у "звёзд" короткая подпись, поэтому слот уже остальных
+        float[] slotWeights = { 0.55f, 1f, 1f, 1f, 1f };
         CreateFilterButton(filterRowRect, "StarsFilterButton",
-            Localization.Get("list.filter_stars"), 0, filterSlotCount, filterButtonGap, OpenStarsFilterPopup);
+            Localization.Get("list.filter_stars"), 0, slotWeights, filterButtonGap, OpenStarsFilterPopup);
         CreateFilterButton(filterRowRect, "EditorFilterButton",
-            Localization.Get("list.filter_editor"), 1, filterSlotCount, filterButtonGap, OpenEditorFilterPopup);
+            Localization.Get("list.filter_editor"), 1, slotWeights, filterButtonGap, OpenEditorFilterPopup);
         CreateFilterButton(filterRowRect, "TagsFilterButton",
-            Localization.Get("list.filter_tags"), 2, filterSlotCount, filterButtonGap, OpenTagsFilterPopup);
+            Localization.Get("list.filter_tags"), 2, slotWeights, filterButtonGap, OpenTagsFilterPopup);
         CreateFilterButton(filterRowRect, "VerifiedFilterButton",
-            Localization.Get("list.filter_verified"), 3, filterSlotCount, filterButtonGap, OpenVerificationFilterPopup);
+            Localization.Get("list.filter_verified"), 3, slotWeights, filterButtonGap, OpenVerificationFilterPopup);
         CreateFilterButton(filterRowRect, "StatusFilterButton",
-            Localization.Get("list.filter_status"), 4, filterSlotCount, filterButtonGap, OpenStatusFilterPopup);
+            Localization.Get("list.filter_status"), 4, slotWeights, filterButtonGap, OpenStatusFilterPopup);
+        UpdateFavoritesButtonColor();
+
+        // Избранное — отдельная небольшая кнопка под панелью фильтров, со своей заливкой
+        var (favGo, favButton, favImage, favText) = UIFactory.CreateButton(
+            panel, "FavoritesToggleButton", FavoritesGlyph, 18);
+        var favRect = (RectTransform)favGo.transform;
+        favRect.anchorMin = new Vector2(0, 1);
+        favRect.anchorMax = new Vector2(0, 1);
+        favRect.pivot = new Vector2(0, 1);
+        favRect.sizeDelta = new Vector2(FavoritesButtonSize, FavoritesButtonSize);
+        favRect.anchoredPosition = new Vector2(4f,
+            -(StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap + FilterRowHeight + RowGap));
+        favText.alignment = TextAnchor.MiddleCenter;
+        var favTextRect = (RectTransform)favText.transform;
+        favTextRect.offsetMin = new Vector2(0, favTextRect.offsetMin.y);
+        favTextRect.offsetMax = new Vector2(0, favTextRect.offsetMax.y);
+        UIFactory.AddOutline(favGo);
+        _favoritesButton = (favButton, favImage);
+        favButton.onClick.AddListener(() => ToggleFavoritesFilter(favRect));
+        UpdateFavoritesButtonColor();
 
         var (progressGo, progressFill, progressText) = UIFactory.CreateProgressBar(panel, "CatalogProgressBar");
         var progressRect = (RectTransform)progressGo.transform;
@@ -572,7 +659,7 @@ public class MapListPanel : MonoBehaviour
         progressRect.anchorMax = new Vector2(1, 1);
         progressRect.pivot = new Vector2(0.5f, 1);
         progressRect.sizeDelta = new Vector2(0, CatalogProgressBarHeight);
-        progressRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap + FilterRowHeight + RowGap));
+        progressRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap + FilterRowHeight + RowGap + FavoritesButtonSize + RowGap));
         progressText.fontSize = 13;
         _catalogProgressGo = progressGo;
         _catalogProgressFill = progressFill;
@@ -723,20 +810,29 @@ public class MapListPanel : MonoBehaviour
         return new Color(c.r / 255f * factor, c.g / 255f * factor, c.b / 255f * factor, 1f);
     }
 
-    private static void CreateFilterButton(
+    private static (Button Button, Image Image) CreateFilterButton(
         RectTransform parent, string name, string label,
-        int slotIndex, int totalSlots, float gap, Action<RectTransform> onClick)
+        int slotIndex, float[] slotWeights, float gap, Action<RectTransform> onClick)
     {
-        var (go, button, _, _) = UIFactory.CreateButton(parent, name, label, 15);
+        var (go, button, image, text) = UIFactory.CreateButton(parent, name, label, 15);
+        text.alignment = TextAnchor.MiddleCenter;
+        UIFactory.AddOutline(go);
         var rect = (RectTransform)go.transform;
-        float slotWidth = 1f / totalSlots;
-        rect.anchorMin = new Vector2(slotIndex * slotWidth, 0);
-        rect.anchorMax = new Vector2((slotIndex + 1) * slotWidth, 1);
+
+        float total = slotWeights.Sum();
+        float start = slotWeights.Take(slotIndex).Sum() / total;
+        float end = slotWeights.Take(slotIndex + 1).Sum() / total;
+
+        rect.anchorMin = new Vector2(start, 0);
+        rect.anchorMax = new Vector2(end, 1);
+
         float leftGap = slotIndex == 0 ? 0f : gap / 2f;
-        float rightGap = slotIndex == totalSlots - 1 ? 0f : gap / 2f;
+        float rightGap = slotIndex == slotWeights.Length - 1 ? 0f : gap / 2f;
         rect.offsetMin = new Vector2(leftGap, 0);
         rect.offsetMax = new Vector2(-rightGap, 0);
+
         button.onClick.AddListener(() => onClick(rect));
+        return (button, image);
     }
 
     private void OpenStarsFilterPopup(RectTransform anchor)
@@ -919,8 +1015,41 @@ public class MapListPanel : MonoBehaviour
         return MapStatus.NotDownloaded;
     }
 
+    private void ToggleFavoritesFilter(RectTransform _)
+    {
+        _favoritesOnly = !_favoritesOnly;
+        UpdateFavoritesButtonColor();
+        RefreshVisibility();
+    }
+
+    private void UpdateFavoritesButtonColor()
+    {
+        if (_favoritesButton.Image == null) return;
+
+        // Своя заливка, не общая пара "включено/выключено"
+        _favoritesButton.Image.color = _favoritesOnly
+            ? new Color(0.478f, 0.192f, 0.255f, 1f)
+            : new Color(0.157f, 0.145f, 0.180f, 1f);
+    }
+
+    // Поиск идёт по названию и по автору, регистр не важен
+    private bool MatchesSearch(MapRow entry)
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return true;
+
+        string query = _searchQuery.Trim();
+        return (entry.Name?.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+            || (entry.Creator?.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
+    }
+
     private bool PassesFilters(MapRow entry)
     {
+        if (!MatchesSearch(entry))
+            return false;
+
+        if (_favoritesOnly && !FavoritesStore.IsFavorite(entry))
+            return false;
+
         if (!_starsShowAll && !_selectedStars.Contains(Mathf.Clamp(entry.Stars, 0, 5)))
             return false;
         if (!_editorsShowAll && (entry.Editors == null || !entry.Editors.Any(e => _selectedEditors.Contains(e))))

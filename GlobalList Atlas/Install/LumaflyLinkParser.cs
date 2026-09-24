@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.Install;
 
@@ -35,7 +36,7 @@ public static class LumaflyLinkParser
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"Не удалось разобрать ссылку Lumafly '{lumaflyUrl}': {e.Message}");
+            Log.Error($"Не удалось разобрать ссылку Lumafly '{lumaflyUrl}': {e.Message}");
         }
 
         return result;

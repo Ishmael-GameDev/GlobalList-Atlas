@@ -1,27 +1,25 @@
-﻿using System;
+using GlobalListAtlas.UI;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using GlobalListAtlas.Configuration;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace GlobalListAtlas.UI;
 
-// Один переключаемый пункт фильтра
 public class FilterOption
 {
     public string Label;
     public bool IsOn;
-    public object Value;
+    public object Value; // произвольное значение фильтра (например, число звёзд)
 
     public Color32? AccentColor;
 }
 
-
-// Универсальная плашка фильтра
 public static class MultiToggleFilterPopup
 {
+    private const string ShowAllLabel = "Показать все";
     private const float CheckboxSize = 18f;
     private const float CheckboxLeftPadding = 10f;
     private const float CheckboxToLabelGap = 8f;
@@ -30,22 +28,20 @@ public static class MultiToggleFilterPopup
     private static readonly Color CheckboxMarkColor = new(0.05f, 0.05f, 0.05f, 1f);
 
     public static GameObject Show(
-    Transform canvasParent,
-    RectTransform anchorNear,
-    string title,
-    List<FilterOption> options,
-    bool showAllIsOn,
-    Action onShowAllSelected,
-    Action<FilterOption> onOptionToggled)
+        Transform canvasParent,
+        RectTransform anchorNear, // под какой кнопкой открыть (например, кнопка "Фильтр")
+        string title,
+        List<FilterOption> options,
+        bool showAllIsOn,
+        Action onShowAllSelected,
+        Action<FilterOption> onOptionToggled)
     {
-        // Добавляем Canvas и GraphicRaycaster, чтобы вынести попап на самый верхний слой отрисовки
-        var overlayGo = new GameObject("FilterPopupOverlay", typeof(RectTransform), typeof(Image), typeof(Canvas), typeof(GraphicRaycaster));
-        overlayGo.transform.SetParent(canvasParent, false);
+        // Полотна списка и деталей — разные, поэтому плашке нужно своё,
+        // с более высоким sortingOrder, иначе она уходит под панель деталей.
+        UIFactory.CreateRootCanvas("FilterPopupCanvas", out var popupCanvasGo).sortingOrder = 20000;
 
-        var popupCanvas = overlayGo.GetComponent<Canvas>();
-        popupCanvas.overrideSorting = true;
-        popupCanvas.sortingOrder = 12000; // Поверх MapListPanel, MapDetailsPanel и остальных интерфейсов
-
+        var overlayGo = new GameObject("FilterPopupOverlay", typeof(RectTransform), typeof(Image));
+        overlayGo.transform.SetParent(popupCanvasGo.transform, false);
         var overlayRect = (RectTransform)overlayGo.transform;
         overlayRect.anchorMin = Vector2.zero;
         overlayRect.anchorMax = Vector2.one;
@@ -53,11 +49,11 @@ public static class MultiToggleFilterPopup
         overlayRect.offsetMax = Vector2.zero;
 
         var overlayImage = overlayGo.GetComponent<Image>();
-        overlayImage.color = new Color(0, 0, 0, 0.55f);
+        overlayImage.color = new Color(0, 0, 0, 0.55f); // перекрывает всё, блокирует клики под собой
 
         var overlayButton = overlayGo.AddComponent<Button>();
         overlayButton.transition = Selectable.Transition.None;
-        overlayButton.onClick.AddListener(() => UnityEngine.Object.Destroy(overlayGo));
+        overlayButton.onClick.AddListener(() => PopupStack.Close(popupCanvasGo));
 
         var card = UIFactory.CreatePanel(overlayRect, "FilterCard", new Color(0.1f, 0.1f, 0.13f, 0.98f));
         card.sizeDelta = new Vector2(280, 40 + (options.Count + 1) * 44);
@@ -75,7 +71,8 @@ public static class MultiToggleFilterPopup
             card.anchoredPosition = Vector2.zero;
         }
 
-        // Клик по самой карточке не должен закрывать попап — блокируем всплытие через отдельный Image-блокер
+        // Клик по самой карточке не должен закрывать попап — блокируем всплытие через отдельный Image-блокер.
+        // (Image уже есть из CreatePanel — этого достаточно, чтобы карточка сама ловила клики и не пробрасывала их на оверлей.)
 
         var titleText = UIFactory.CreateText(card, "Title", title, 20, TextAnchor.MiddleCenter);
         var titleRect = (RectTransform)titleText.transform;
@@ -88,7 +85,7 @@ public static class MultiToggleFilterPopup
         float y = -40;
 
         var (showAllGo, showAllButton, showAllImage, showAllTextComp, showAllCheckmark) =
-    CreateToggleRow(card, "Option_ShowAll", Localization.Get("filter.show_all"), y, showAllIsOn, null);
+            CreateToggleRow(card, "Option_ShowAll", ShowAllLabel, y, showAllIsOn, null);
         y -= 44;
 
         var optionRows = new List<(Image image, Text text, GameObject checkmark)>();
@@ -112,7 +109,7 @@ public static class MultiToggleFilterPopup
                 }
                 else if (options.All(o => !o.IsOn))
                 {
-                    // Ничего больше не выбрано - возвращаемся к состоянию "Показать все".
+                    // Ничего больше не выбрано — возвращаемся к состоянию "Показать все".
                     showAllIsOn = true;
                     ApplyToggleVisual(showAllImage, showAllTextComp, showAllCheckmark, true, null);
                 }
@@ -137,10 +134,10 @@ public static class MultiToggleFilterPopup
             onShowAllSelected?.Invoke();
         });
 
-        return overlayGo;
+        PopupStack.Register(popupCanvasGo);
+        return popupCanvasGo;
     }
 
-    // Создает одну кнопку на всю ширину карточки + квадрат-чекбокс слева
     private static (GameObject go, Button button, Image image, Text text, GameObject checkmark) CreateToggleRow(
         RectTransform parent, string name, string label, float y, bool isOn, Color32? accentColor)
     {
@@ -170,19 +167,21 @@ public static class MultiToggleFilterPopup
         checkmarkRect.offsetMin = Vector2.zero;
         checkmarkRect.offsetMax = Vector2.zero;
 
+        // Подпись по центру строки, с полями под чекбокс с обеих сторон
         var textRect = (RectTransform)text.transform;
         textRect.offsetMin = new Vector2(CheckboxLeftPadding + CheckboxSize + CheckboxToLabelGap, textRect.offsetMin.y);
+        textRect.offsetMax = new Vector2(-(CheckboxLeftPadding + CheckboxSize), textRect.offsetMax.y);
+        text.alignment = TextAnchor.MiddleCenter;
 
         ApplyToggleVisual(image, text, checkmarkText.gameObject, isOn, accentColor);
 
         return (btnGo, button, image, text, checkmarkText.gameObject);
     }
 
-    // Красит фон кнопки
     private static void ApplyToggleVisual(Image image, Text label, GameObject checkmark, bool isOn, Color32? accentColor)
     {
         Color bg = accentColor.HasValue
-            ? (isOn ? (Color)accentColor.Value : Darken(accentColor.Value))
+            ? (isOn ? Saturate(accentColor.Value, 1.35f, 0.72f) : Saturate(accentColor.Value, 1.20f, 0.44f))
             : (isOn ? UIFactory.ToggleOnBg : UIFactory.ToggleOffBg);
 
         image.color = bg;
@@ -190,10 +189,12 @@ public static class MultiToggleFilterPopup
         checkmark.SetActive(isOn);
     }
 
-    private static Color Darken(Color32 c, float factor = 0.5f)
+    private static Color Saturate(Color32 c, float saturationBoost, float value)
     {
-        return new Color(c.r / 255f * factor, c.g / 255f * factor, c.b / 255f * factor, 1f);
+        Color.RGBToHSV(c, out float h, out float sat, out _);
+        return Color.HSVToRGB(h, Mathf.Clamp01(sat * saturationBoost), Mathf.Clamp01(value));
     }
+
 
     private static Color GetReadableTextColor(Color bg)
     {

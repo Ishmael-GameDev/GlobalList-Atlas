@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <!-- Change this to the path of your modded HK installation -->
-    <HollowKnightRefs>C:\Hollow Knight\Hollow Knight\Hollow Knight_Data\Managed</HollowKnightRefs>
+    <HollowKnightRefs>C:\Games\Hollow Knight\Hollow Knight\Hollow Knight_Data\Managed\</HollowKnightRefs>
     <!-- Change this to the path where you want the ready-to-upload exports to be -->
-    <ExportDir>C:\MyMods</ExportDir>
+    <ExportDir>C:\Users\RobotComp.ru\Documents\</ExportDir>
     <!-- Uncomment this to generate a documentation file to be included with the mod -->
     <!--<DocumentationFile>$(OutputPath)/$(AssemblyTitle).xml</DocumentationFile>-->
   </PropertyGroup>
@@ -15,7 +15,7 @@
     <Product>GlobalListAtlas</Product>
     <Description>A Hollow Knight Mod</Description>
     <Copyright>Copyright ©  2026</Copyright>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <LangVersion>latest</LangVersion>
@@ -52,11 +52,15 @@
     <WriteLinesToFile File="$(ExportDir)/$(TargetName)/SHA.txt" Lines="$(OutputFileString);@(FilesWithHashes->'%(FileHash)');$(OutputZipString);@(ZipFilesWithHashes->'%(FileHash)')" Overwrite="true" Encoding="UTF-8" />
   </Target>
   <ItemGroup>
+    <None Remove="Configuration\en.json" />
+    <None Remove="Configuration\ru.json" />
     <None Remove="Resources\en.png" />
     <None Remove="Resources\Global.png" />
     <None Remove="Resources\ru.png" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Resources\Localization\en.json" />
+    <EmbeddedResource Include="Resources\Localization\ru.json" />
     <EmbeddedResource Include="Resources\en.png" />
     <EmbeddedResource Include="Resources\Global.png" />
     <EmbeddedResource Include="Resources\ru.png" />
@@ -65,6 +69,14 @@
     <Reference Include="Assembly-CSharp">
       <HintPath>$(HollowKnightRefs)/Assembly-CSharp.dll</HintPath>
     </Reference>
+	  <Reference Include="Satchel">
+		  <HintPath>C:\Games\Hollow Knight\Hollow Knight\Hollow Knight_Data\Managed\Mods\Satchel\Satchel.dll</HintPath>
+		  <Private>false</Private>
+	  </Reference>
+	  <Reference Include="MagicUI">
+		  <HintPath>C:\Games\Hollow Knight\Hollow Knight\Hollow Knight_Data\Managed\Mods\MagicUI\MagicUI.dll</HintPath>
+		  <Private>false</Private>
+	  </Reference>
     <Reference Include="Assembly-CSharp-firstpass">
       <HintPath>$(HollowKnightRefs)/Assembly-CSharp-firstpass.dll</HintPath>
     </Reference>
@@ -335,7 +347,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include=".gitignore" />
-    <None Include="ReadMe.md" />
+    <EmbeddedResource Include="ReadMe.md" />
     <None Include="Resources\.gitignore" />
   </ItemGroup>
   <ItemGroup>

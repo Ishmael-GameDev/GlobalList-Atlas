@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using SharpCompress.Archives;
 using SharpCompress.Common;
@@ -20,7 +20,7 @@ public static class ArchiveExtractor
             using var memoryStream = new MemoryStream(archiveBytes);
             using var archive = ArchiveFactory.OpenArchive(memoryStream);
 
-            Modding.Logger.Log($"Формат архива определён как: {archive.Type}");
+            Log.Info($"Формат архива определён как: {archive.Type}");
 
             int extractedCount = 0;
             foreach (var entry in archive.Entries)
@@ -36,12 +36,12 @@ public static class ArchiveExtractor
                 extractedCount++;
             }
 
-            Modding.Logger.Log($"Распаковано {extractedCount} файлов в: {targetFolder}");
+            Log.Info($"Распаковано {extractedCount} файлов в: {targetFolder}");
             return true;
         }
         catch (Exception e)
         {
-            Modding.Logger.Log($"Ошибка распаковки архива в {targetFolder}: {e.Message}\n{e.StackTrace}");
+            Log.Error($"Ошибка распаковки архива в {targetFolder}: {e.Message}\n{e.StackTrace}");
             return false;
         }
     }

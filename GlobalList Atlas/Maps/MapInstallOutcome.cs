@@ -3,7 +3,6 @@ using GlobalListAtlas.Configuration;
 
 namespace GlobalListAtlas.Maps;
 
-//Результат скачивания и установки файлов карты (json), для отображения в MapDetailsPanel
 public class MapInstallOutcome
 {
     public bool Success;
@@ -18,6 +17,5 @@ public class MapInstallOutcome
 
     public long FileSizeBytes;
 
-    // Певышает 10 МБ
     public bool IsLargeFile => FileSizeBytes > 10 * 1024 * 1024;
 }

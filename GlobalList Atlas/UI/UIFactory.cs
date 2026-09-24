@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.UI;
 
 namespace GlobalListAtlas.UI;
@@ -28,7 +28,7 @@ internal static class UIFactory
 
         var canvas = go.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 10000;
+        canvas.sortingOrder = 15000;
 
         var scaler = go.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -94,6 +94,67 @@ internal static class UIFactory
         return (go, button, image, text);
     }
 
+    public static void AddOutline(GameObject go, float thickness = 1f)
+    {
+        var outline = go.GetComponent<Outline>() ?? go.AddComponent<Outline>();
+        outline.effectColor = new Color(0f, 0f, 0f, 0.55f);
+        outline.effectDistance = new Vector2(thickness, thickness);
+        outline.useGraphicAlpha = false;
+    }
+
+    public static float MeasureButtonWidth(Text text, float horizontalPadding = 34f, float min = 90f, float max = 420f)
+    {
+        var settings = text.GetGenerationSettings(new Vector2(0f, 0f));
+        settings.generateOutOfBounds = true;
+        float width = new TextGenerator().GetPreferredWidth(text.text, settings) / text.pixelsPerUnit;
+        return Mathf.Clamp(width + horizontalPadding, min, max);
+    }
+
+    public static (GameObject row, GameObject go, Button button, Image image, Text text) CreateCompactButtonRow(
+        Transform parent, string name, string label, int fontSize, float height, float indent = 0f, float minWidth = 90f)
+    {
+        var row = new GameObject(name + "Row", typeof(RectTransform));
+        row.transform.SetParent(parent, false);
+        ((RectTransform)row.transform).sizeDelta = new Vector2(0, height);
+
+        var (go, button, image, text) = CreateButton(row.transform, name, label, fontSize);
+        text.alignment = TextAnchor.MiddleCenter;
+        text.horizontalOverflow = HorizontalWrapMode.Overflow;
+        AddOutline(go);
+
+        var rect = (RectTransform)go.transform;
+        rect.anchorMin = new Vector2(0f, 0f);
+        rect.anchorMax = new Vector2(0f, 1f);
+        rect.pivot = new Vector2(0f, 0.5f);
+        rect.sizeDelta = new Vector2(MeasureButtonWidth(text, min: minWidth), 0f);
+        rect.anchoredPosition = new Vector2(indent, 0f);
+
+        return (row, go, button, image, text);
+    }
+    public static void FitButtonWidthForLabels(GameObject go, Text text, float minWidth, params string[] labels)
+    {
+        string original = text.text;
+        float widest = minWidth;
+
+        foreach (var label in labels)
+        {
+            if (string.IsNullOrEmpty(label)) continue;
+            text.text = label;
+            widest = Mathf.Max(widest, MeasureButtonWidth(text, min: minWidth));
+        }
+
+        text.text = original;
+
+        var rect = (RectTransform)go.transform;
+        rect.sizeDelta = new Vector2(widest, rect.sizeDelta.y);
+    }
+
+    public static void RefitButtonWidth(GameObject go, Text text, float minWidth = 90f)
+    {
+        var rect = (RectTransform)go.transform;
+        rect.sizeDelta = new Vector2(MeasureButtonWidth(text, min: minWidth), rect.sizeDelta.y);
+    }
+
     // Скролл-контейнер: слева вертикальный Scrollbar
     public static (RectTransform content, ScrollRect scrollRect) CreateVerticalScrollList(Transform parent, string name)
     {
@@ -111,7 +172,7 @@ internal static class UIFactory
         scrollRect.movementType = ScrollRect.MovementType.Clamped;
         scrollRect.scrollSensitivity = 30f;
 
-        // --- Скроллбар слева ---
+        // Скроллбар слева
         var scrollbarGo = new GameObject("Scrollbar", typeof(RectTransform), typeof(Image), typeof(Scrollbar));
         scrollbarGo.transform.SetParent(root, false);
         var scrollbarRect = (RectTransform)scrollbarGo.transform;
@@ -190,6 +251,50 @@ internal static class UIFactory
 
         return (content, scrollRect);
     }
+    public static (GameObject go, InputField input) CreateInputField(Transform parent, string name, string placeholder, int fontSize = 16)
+    {
+        var go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(InputField));
+        go.transform.SetParent(parent, false);
+        go.GetComponent<Image>().color = ToggleOffBg;
+
+        var textGo = new GameObject("Text", typeof(RectTransform), typeof(Text));
+        textGo.transform.SetParent(go.transform, false);
+        var text = textGo.GetComponent<Text>();
+        text.font = DefaultFont;
+        text.fontSize = fontSize;
+        text.color = TextColor;
+        text.alignment = TextAnchor.MiddleLeft;
+        text.supportRichText = false;
+        StretchWithPadding((RectTransform)textGo.transform, 8f);
+
+        var placeholderGo = new GameObject("Placeholder", typeof(RectTransform), typeof(Text));
+        placeholderGo.transform.SetParent(go.transform, false);
+        var placeholderText = placeholderGo.GetComponent<Text>();
+        placeholderText.font = DefaultFont;
+        placeholderText.fontSize = fontSize;
+        placeholderText.color = new Color(1f, 1f, 1f, 0.45f);
+        placeholderText.alignment = TextAnchor.MiddleLeft;
+        placeholderText.text = placeholder;
+        StretchWithPadding((RectTransform)placeholderGo.transform, 8f);
+
+        var input = go.GetComponent<InputField>();
+        input.textComponent = text;
+        input.placeholder = placeholderText;
+        input.lineType = InputField.LineType.SingleLine;
+        input.caretColor = TextColor;
+        input.customCaretColor = true;
+
+        return (go, input);
+    }
+
+    private static void StretchWithPadding(RectTransform rect, float padding)
+    {
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = new Vector2(padding, 2f);
+        rect.offsetMax = new Vector2(-padding, -2f);
+    }
+
     public static Color GetReadableTextColor(Color32 bg)
     {
         float luminance = (0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b) / 255f;

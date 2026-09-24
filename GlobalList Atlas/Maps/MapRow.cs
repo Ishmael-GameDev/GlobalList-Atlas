@@ -5,13 +5,11 @@ using GlobalListAtlas.Configuration;
 
 namespace GlobalListAtlas.Maps;
 
-// Одна строка карты из глобаллиста
 public class MapRow
 {
     public string Name;
     public string DriveUrl;
 
-   
     public List<string> RequiredPublicMods = new();
 
     public List<MapEditor> Editors = new();

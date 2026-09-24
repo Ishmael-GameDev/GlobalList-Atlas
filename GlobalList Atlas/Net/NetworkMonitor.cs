@@ -19,12 +19,13 @@ public class NetworkMonitor : MonoBehaviour
         if (_instance == null)
         {
             Log.Info("Инициализация NetworkMonitor...");
-            var go = new GameObject("[Globalist] NetworkMonitor");
+            var go = new GameObject("[GlobalList] NetworkMonitor");
             DontDestroyOnLoad(go);
             _instance = go.AddComponent<NetworkMonitor>();
         }
     }
 
+    // Используем системные HTTP-эндпоинты проверки связи.
     private static readonly string[] ProbeUrls = new[]
     {
         "http://connectivitycheck.gstatic.com/generate_204",
@@ -74,7 +75,7 @@ public class NetworkMonitor : MonoBehaviour
 
     private async Task ProbeOnceAsync(CancellationToken token)
     {
-        // Если прямо сейчас качаются байты
+        // 1. Если прямо сейчас качаются байты — сеть 100% есть
         if (BandwidthTracker.GetBytesPerSecond() > 0)
         {
             IsOnline = true;
@@ -82,7 +83,7 @@ public class NetworkMonitor : MonoBehaviour
             return;
         }
 
-        // Проверка через HTTP
+        // 2. Проверка через HTTP
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(ProbeTimeoutSeconds) };
         client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
         bool success = false;
@@ -99,7 +100,7 @@ public class NetworkMonitor : MonoBehaviour
                 {
                     success = true;
                     ping = (float)sw.Elapsed.TotalMilliseconds;
-                    //Log.Info($"Сеть есть (HTTP пинг {url}). Пинг: {ping:F0} мс");
+                    Log.Info($"Сеть есть (HTTP пинг {url}). Пинг: {ping:F0} мс");
                     break;
                 }
             }

@@ -254,7 +254,6 @@ public static class MapSheetParser
         return sharedStrings;
     }
 
-    // Возвращает все гиперссылки на ячейку
     private static Dictionary<string, List<string>> LoadHyperlinks(ZipArchive zip, XDocument sheetXml, string sheetTarget)
     {
         var hyperlinks = new Dictionary<string, List<string>>();
