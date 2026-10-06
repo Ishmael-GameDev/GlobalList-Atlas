@@ -7,9 +7,6 @@ using GlobalListAtlas.Util;
 
 namespace GlobalListAtlas.Install;
 
-// Определяет, какие из трёх известных редакторов карт установлены у игрока.
-// Проверка по конкретным dll: так однозначно различаются Legacy Architect
-// (Architect.dll) и New Architect (Architect_HK.dll).
 public static class EditorInstallDetector
 {
     private static readonly string DecorationMasterDll = Path.Combine("DecorationMaster", "DecorationMaster.dll");

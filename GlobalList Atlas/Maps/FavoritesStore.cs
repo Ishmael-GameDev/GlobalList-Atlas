@@ -13,7 +13,7 @@ public static class FavoritesStore
         var settings = Settings;
         if (settings?.FavoriteMaps == null || map == null) return false;
 
-        return settings.FavoriteMaps.Any(n => string.Equals(n, map.Name, StringComparison.OrdinalIgnoreCase));
+        return settings.FavoriteMaps.Any(n => string.Equals(n, FavoriteKey(map), StringComparison.OrdinalIgnoreCase));
     }
 
     public static bool Toggle(MapRow map)
@@ -23,15 +23,20 @@ public static class FavoritesStore
 
         if (IsFavorite(map))
         {
-            settings.FavoriteMaps.RemoveAll(n => string.Equals(n, map.Name, StringComparison.OrdinalIgnoreCase));
+            settings.FavoriteMaps.RemoveAll(n => string.Equals(n, FavoriteKey(map), StringComparison.OrdinalIgnoreCase));
             Log.Info($"Карта '{map.Name}' убрана из избранного");
             return false;
         }
 
-        settings.FavoriteMaps.Add(map.Name);
+        settings.FavoriteMaps.Add(FavoriteKey(map));
         Log.Info($"Карта '{map.Name}' добавлена в избранное");
         return true;
     }
+
+    private static string FavoriteKey(MapRow map) =>
+        map.Catalog == Configuration.MapCatalogKind.ArchitectServer && !string.IsNullOrEmpty(map.ServerLevelId)
+            ? MapMarksStore.KeyOf(map)
+            : map.Name;
 
     public static int Count => Settings?.FavoriteMaps?.Count ?? 0;
 }

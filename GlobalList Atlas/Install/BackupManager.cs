@@ -9,7 +9,6 @@ using GlobalListAtlas.Maps;
 
 namespace GlobalListAtlas.Install;
 
-// Бекапы, которые MapFileDistributor создаёт в папке редактора перед каждым запуском карты (GlobalistInstaller_backup_дата)
 public static class BackupManager
 {
     public const string BackupPrefix = "GlobalistInstaller_backup_";
@@ -30,7 +29,6 @@ public static class BackupManager
         name.StartsWith(BackupPrefix, StringComparison.OrdinalIgnoreCase) ||
         name.StartsWith(LegacyPrefix, StringComparison.OrdinalIgnoreCase);
 
-    // Все бекапы во всех папках редакторов, новые сверху
     public static List<BackupInfo> ListAll()
     {
         var result = new List<BackupInfo>();
@@ -80,7 +78,6 @@ public static class BackupManager
             DateTimeStyles.None, out var dt) ? dt : (DateTime?)null;
     }
 
-    // Возвращает содержимое бекапа обратно в папку редактора
     public static string Restore(BackupInfo backup)
     {
         if (backup == null || !Directory.Exists(backup.Path))
@@ -132,7 +129,6 @@ public static class BackupManager
         }
     }
 
-    // Удаляет все бекапы, кроме keepNewest самых свежих в каждой папке редактора
     public static int DeleteOldKeepingNewest(int keepNewest)
     {
         int deleted = 0;

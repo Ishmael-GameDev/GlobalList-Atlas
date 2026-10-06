@@ -1,6 +1,5 @@
 namespace GlobalListAtlas.Logging;
 
-// Единая точка логирования мода. Уровни пробрасываются в Modding.Logger
 public static class Log
 {
     private const string Prefix = "[GlobalListAtlas] ";

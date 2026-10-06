@@ -17,7 +17,6 @@ public enum EditorModState
     Disabled
 }
 
-// Реестр модов-редакторов карт: где лежат, как называются в ModLinks, в каком они сейчас состоянии и как их включать/выключать
 public static class EditorModRegistry
 {
     public class EditorModInfo
@@ -25,7 +24,7 @@ public static class EditorModRegistry
         public MapEditor Editor;
         public string ModLinksName;   // имя мода в ModLinks.xml
         public string FolderName;     // имя папки внутри Mods
-        public string DllName;        // файл, по которому редактор опознаётся
+        public string DllName;
     }
 
     public static readonly EditorModInfo[] Entries =
@@ -38,7 +37,6 @@ public static class EditorModRegistry
     public static EditorModInfo Find(MapEditor editor) =>
         Entries.FirstOrDefault(e => e.Editor == editor);
 
-    // Управляемые редакторы — те, что есть в реестре (Custom Mod / Custom Engine сюда не входят)
     public static bool IsManaged(MapEditor editor) => Find(editor) != null;
 
     public static EditorModState GetState(MapEditor editor)
@@ -51,18 +49,15 @@ public static class EditorModRegistry
         return EditorModState.NotInstalled;
     }
 
-    // Оба Architect'а включены одновременно — они конфликтуют между собой
     public static bool ArchitectsConflict() =>
         GetState(MapEditor.LegacyArchitect) == EditorModState.Enabled &&
         GetState(MapEditor.NewArchitect) == EditorModState.Enabled;
 
-    // Версия установленного редактора или null
     public static string GetInstalledVersion(MapEditor editor)
     {
         var info = Find(editor);
         if (info == null) return null;
 
-        // У обоих Architect'ов имя мода в API может совпадать
         bool ambiguous = (editor == MapEditor.LegacyArchitect || editor == MapEditor.NewArchitect)
                          && ArchitectsConflict();
 
@@ -74,7 +69,7 @@ public static class EditorModRegistry
                 if (!string.IsNullOrWhiteSpace(apiVersion))
                     return apiVersion;
             }
-            catch { /* API недоступен — идём к чтению dll */ }
+            catch {  }
         }
 
         string dllPath = Exists(EnabledPath(info)) ? EnabledPath(info)
@@ -84,7 +79,6 @@ public static class EditorModRegistry
 
         try
         {
-            // Читает только метаданные сборки, сама dll при этом не загружается
             return AssemblyName.GetAssemblyName(dllPath).Version?.ToString();
         }
         catch (Exception e)
@@ -94,7 +88,6 @@ public static class EditorModRegistry
         }
     }
 
-    // Включает или выключает редактор
     public static string SetEnabled(MapEditor editor, bool enable)
     {
         var info = Find(editor);

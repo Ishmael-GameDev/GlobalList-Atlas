@@ -3,8 +3,6 @@ using UnityEngine.UI;
 
 namespace GlobalListAtlas.UI;
 
-
-// Хелперы для рантайм-UI поверх кастомного Canvas
 internal static class UIFactory
 {
     public static readonly Color PanelBg = new(0.08f, 0.08f, 0.1f, 0.92f);
@@ -94,6 +92,82 @@ internal static class UIFactory
         return (go, button, image, text);
     }
 
+    public enum IconKind { Wrench, Ring }
+
+    private static readonly System.Collections.Generic.Dictionary<IconKind, Sprite> IconCache = new();
+
+    public static Sprite GetIcon(IconKind kind)
+    {
+        if (IconCache.TryGetValue(kind, out var cached)) return cached;
+
+        const int size = 32;
+        var pixels = new Color32[size * size];
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+                pixels[y * size + x] = IconMask(kind, x + 0.5f, y + 0.5f) ? new Color32(255, 255, 255, 255) : new Color32(0, 0, 0, 0);
+
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
+        {
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        tex.SetPixels32(pixels);
+        tex.Apply();
+        var sprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+        IconCache[kind] = sprite;
+        return sprite;
+    }
+
+    private static bool IconMask(IconKind kind, float x, float y)
+    {
+        float d2 = (x - 16f) * (x - 16f) + (y - 16f) * (y - 16f);
+        if (kind == IconKind.Ring) return d2 <= 81f && d2 >= 36f;
+
+        // Ручка по диагонали, головка с открытым зевом в правом верхнем углу
+        return (DistToSegment(x, y, 7f, 7f, 19f, 19f) <= 3f) ||
+               ((x - 22f) * (x - 22f) + (y - 22f) * (y - 22f) <= 42f && DistToSegment(x, y, 22f, 22f, 30f, 30f) > 3.2f);
+    }
+
+    private static float DistToSegment(float px, float py, float ax, float ay, float bx, float by)
+    {
+        float vx = bx - ax, vy = by - ay;
+        float t = Mathf.Clamp01(((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy));
+        float dx = px - (ax + t * vx), dy = py - (ay + t * vy);
+        return Mathf.Sqrt(dx * dx + dy * dy);
+    }
+
+    public static RectTransform CreateStatsRow(Transform parent, string downloadsText, int? likes, Color color, int fontSize, float height)
+    {
+        var row = new GameObject("StatsRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(ContentSizeFitter));
+        row.transform.SetParent(parent, false);
+        var group = row.GetComponent<HorizontalLayoutGroup>();
+        group.spacing = 6f;
+        group.childAlignment = TextAnchor.MiddleRight;
+        group.childControlWidth = true;
+        group.childControlHeight = true;
+        group.childForceExpandWidth = false;
+        group.childForceExpandHeight = false;
+        var fitter = row.GetComponent<ContentSizeFitter>();
+        fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.verticalFit = ContentSizeFitter.FitMode.Unconstrained;
+
+        var rect = (RectTransform)row.transform;
+        rect.sizeDelta = new Vector2(0, height);
+
+        var downloads = CreateText(rect, "Downloads", downloadsText, fontSize, TextAnchor.MiddleRight);
+        downloads.color = color;
+        downloads.horizontalOverflow = HorizontalWrapMode.Overflow;
+
+        if (likes.HasValue)
+        {
+            var likesText = CreateText(rect, "Likes", $"♥ {likes.Value}", fontSize, TextAnchor.MiddleRight);
+            likesText.color = color;
+            likesText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        }
+
+        return rect;
+    }
+
     public static void AddOutline(GameObject go, float thickness = 1f)
     {
         var outline = go.GetComponent<Outline>() ?? go.AddComponent<Outline>();
@@ -155,7 +229,6 @@ internal static class UIFactory
         rect.sizeDelta = new Vector2(MeasureButtonWidth(text, min: minWidth), rect.sizeDelta.y);
     }
 
-    // Скролл-контейнер: слева вертикальный Scrollbar
     public static (RectTransform content, ScrollRect scrollRect) CreateVerticalScrollList(Transform parent, string name)
     {
         var rootGo = new GameObject(name, typeof(RectTransform));
@@ -300,7 +373,6 @@ internal static class UIFactory
         float luminance = (0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b) / 255f;
         return luminance > 0.6f ? Color.black : Color.white;
     }
-    // Прогресс-бар: темная подложка + заполняющаяся полоска + текст поверх
     public static (GameObject go, Image fillImage, Text text) CreateProgressBar(Transform parent, string name)
     {
         var go = new GameObject(name, typeof(RectTransform), typeof(Image));

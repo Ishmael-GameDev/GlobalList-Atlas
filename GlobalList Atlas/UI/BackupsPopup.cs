@@ -13,7 +13,6 @@ public static class BackupsPopup
 
     public static GameObject Show(Transform canvasParent, Action onChanged)
     {
-        // Своё полотно поверх обеих панелей, как у плашек фильтра
         UIFactory.CreateRootCanvas("BackupsPopupCanvas", out var popupCanvasGo).sortingOrder = 20000;
 
         var overlayGo = new GameObject("BackupsOverlay", typeof(RectTransform), typeof(Image));
@@ -50,7 +49,6 @@ public static class BackupsPopup
 
         Rebuild(content, overlayGo, onChanged);
 
-        // Общая очистка: оставить только несколько свежих бекапов на каждый редактор
         var (cleanupGo, cleanupButton, cleanupImage, cleanupText) = UIFactory.CreateButton(
             card, "CleanupButton", Localization.Get("backups.cleanup", KeepNewest), 16);
         var cleanupRect = (RectTransform)cleanupGo.transform;
@@ -102,6 +100,10 @@ public static class BackupsPopup
             AddRowButton(row, Localization.Get("backups.restore"), 0f, () =>
             {
                 BackupManager.Restore(captured);
+                if (captured.Editor == MapEditor.NewArchitect)
+                    _ = ArchitectRuntimeBridge.RefreshAsync(null);
+                else if (captured.Editor == MapEditor.DecorationMaster)
+                    DecorationMasterRuntimeBridge.Refresh(null);
                 Rebuild(content, overlayGo, onChanged);
                 onChanged?.Invoke();
             });

@@ -18,8 +18,7 @@ public class DllInstallResult
 
 public static class MapFileDistributor
 {
-    private static string DecorationMasterJsonFolder =>
-        Path.Combine(Application.dataPath, "Managed", "Mods", "DecorationMasterData");
+    private static string DecorationMasterJsonFolder => GlobalListAtlas.Util.GamePaths.DecorationMasterDataFolder;
 
     private static string LegacyArchitectJsonFolder =>
         Path.Combine(Application.persistentDataPath, "Architect");
@@ -27,8 +26,7 @@ public static class MapFileDistributor
     private static string NewArchitectJsonFolder =>
         Path.Combine(Application.persistentDataPath, "Architect");
 
-    private static string ManagedModsFolder =>
-        Path.Combine(Application.dataPath, "Managed", "Mods");
+    private static string ManagedModsFolder => GlobalListAtlas.Util.GamePaths.ModsFolder;
 
     public static void DistributeMapFiles(string extractedArchiveFolder, List<MapEditor> editors)
     {
@@ -62,7 +60,6 @@ public static class MapFileDistributor
         }
     }
 
-    // Decoration Master: переносятся файлы с расширениями .json, .txt, .png, .jpg, .jpeg
     private static bool DistributeDecorationMasterFiles(string extractedArchiveFolder, string targetFolder)
     {
         var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".json", ".txt", ".png", ".jpg", ".jpeg" };
@@ -221,7 +218,6 @@ public static class MapFileDistributor
 
             foreach (var targetPath in Directory.GetFiles(editorFolder, "*", SearchOption.AllDirectories))
             {
-                // Бекапы — это история, удаление карты их не касается
                 string relative = targetPath.Substring(editorFolder.Length)
                     .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 if (relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
@@ -255,7 +251,6 @@ public static class MapFileDistributor
         return removed;
     }
 
-    // После удаления файлов остаются пустые подпапки (актуально для New Architect)
     private static void RemoveEmptyDirectories(string root)
     {
         foreach (var dir in Directory.GetDirectories(root))
@@ -272,7 +267,7 @@ public static class MapFileDistributor
                 if (Directory.GetFileSystemEntries(dir).Length == 0)
                     Directory.Delete(dir);
             }
-            catch { /* папка занята или недоступна — оставляем как есть */ }
+            catch {  }
         }
     }
 

@@ -12,9 +12,11 @@ public class GlobalSettings
     public bool IsOfflineMode = false;
     public bool IsAutoSaveCatalog = true;
 
+    [JsonIgnore]
+    public bool IsDevToolsUnlocked = false;
+
     public string CurrentLanguage = "en";
 
-    // Названия карт, отмеченных звёздочкой (столбец A таблицы)
     public List<string> FavoriteMaps = new();
 
 }

@@ -13,13 +13,13 @@ using UnityEngine;
 
 namespace GlobalListAtlas.Install;
 
-// Один манифест мода из ModLinks.xml. DownloadUrl/Sha256 уже выбраны под текущую ОС.
 public class PublicModManifest
 {
     public string Name;
     public string Version;
     public string DownloadUrl;
     public string Sha256;
+    public List<string> Dependencies = new();
 }
 
 public class PublicModDownloadResult
@@ -28,13 +28,14 @@ public class PublicModDownloadResult
     public string ErrorMessage;
     public string ModName;
     public string InstalledFolder;
+    public List<string> InstalledDependencies = new();
+    public List<string> FailedDependencies = new();
 }
 
 public static class PublicModInstaller
 {
     private const string ModLinksUrl = "https://raw.githubusercontent.com/hk-modding/modlinks/main/ModLinks.xml";
 
-    // Сколько раз пытаться скачать файл, если его SHA256 не совпал с манифестом
     private const int MaxDownloadAttempts = 3;
 
     private static readonly byte[] ZipMagic = { 0x50, 0x4B, 0x03, 0x04 };
@@ -83,19 +84,19 @@ public static class PublicModInstaller
             if (string.IsNullOrEmpty(name))
                 continue;
 
-            // Большинство модов имеют одну универсальную ссылку <Link>, но некоторые —
-            // отдельные сборки под каждую ОС: <Links><Windows/><Mac/><Linux/></Links>.
             XElement linkEl = manifestEl.Element(ns + "Link")
                               ?? manifestEl.Element(ns + "Links")?.Element(ns + platformTag);
 
-            // Манифест без ссылки под нашу платформу всё равно сохраняем (с пустым URL),
-            // чтобы при установке сказать "нет сборки под вашу ОС", а не "мод не найден".
             result.Add(new PublicModManifest
             {
                 Name = name,
                 Version = manifestEl.Element(ns + "Version")?.Value?.Trim(),
                 DownloadUrl = linkEl?.Value?.Trim(),
-                Sha256 = linkEl?.Attribute("SHA256")?.Value?.Trim()
+                Sha256 = linkEl?.Attribute("SHA256")?.Value?.Trim(),
+                Dependencies = manifestEl.Element(ns + "Dependencies")?.Elements(ns + "Dependency")
+                    .Select(d => d.Value?.Trim())
+                    .Where(d => !string.IsNullOrEmpty(d))
+                    .ToList() ?? new List<string>()
             });
         }
 
@@ -108,7 +109,6 @@ public static class PublicModInstaller
         OperatingSystemFamily.Linux => "Linux",
         _ => "Windows"
     };
-
     public static PublicModManifest GetCachedManifest(string modName)
     {
         if (_cachedManifests == null || string.IsNullOrWhiteSpace(modName))
@@ -124,8 +124,93 @@ public static class PublicModInstaller
         var manifests = await GetManifestsAsync();
         return manifests.FirstOrDefault(m => string.Equals(m.Name, modName, StringComparison.OrdinalIgnoreCase));
     }
-
     public static async Task<PublicModDownloadResult> DownloadPublicModAsync(string modName)
+    {
+        await GetManifestsAsync();
+
+        var result = await InstallMissingDependenciesInternalAsync(modName);
+        if (result.FailedDependencies.Count > 0)
+            Log.Warn($"Мод '{modName}': не удалось поставить зависимости {string.Join(", ", result.FailedDependencies)}");
+
+        var own = await DownloadSingleModAsync(modName);
+        own.InstalledDependencies = result.InstalledDependencies;
+        own.FailedDependencies = result.FailedDependencies;
+        return own;
+    }
+    public static async Task EnableDependenciesAsync(string modName)
+    {
+        await GetManifestsAsync();
+        foreach (var dependency in ResolveDependencyOrder(modName))
+            if (ModFolderManager.GetState(dependency) == ModState.Disabled)
+                ModFolderManager.SetEnabledOrDefer(dependency, true, out _);
+    }
+
+    public static async Task<PublicModDownloadResult> InstallMissingDependenciesAsync(string modName)
+    {
+        await GetManifestsAsync();
+        var result = await InstallMissingDependenciesInternalAsync(modName);
+        result.Success = result.FailedDependencies.Count == 0;
+        if (!result.Success)
+            result.ErrorMessage = string.Join(", ", result.FailedDependencies);
+        return result;
+    }
+    public static List<string> GetMissingDependencies(string modName)
+    {
+        if (_cachedManifests == null) return new List<string>();
+
+        return ResolveDependencyOrder(modName)
+            .Where(dep => !RequiredModsChecker.IsModInstalled(dep))
+            .ToList();
+    }
+
+    private static async Task<PublicModDownloadResult> InstallMissingDependenciesInternalAsync(string modName)
+    {
+        var result = new PublicModDownloadResult { ModName = modName };
+
+        foreach (var dependency in ResolveDependencyOrder(modName))
+        {
+            if (ModFolderManager.GetState(dependency) == ModState.Disabled)
+            {
+                ModFolderManager.SetEnabledOrDefer(dependency, true, out _);
+                result.InstalledDependencies.Add(dependency);
+                continue;
+            }
+
+            if (RequiredModsChecker.IsModInstalled(dependency))
+                continue;
+
+            var depResult = await DownloadSingleModAsync(dependency);
+            if (depResult.Success) result.InstalledDependencies.Add(dependency);
+            else result.FailedDependencies.Add(dependency);
+        }
+
+        return result;
+    }
+    private static List<string> ResolveDependencyOrder(string modName)
+    {
+        var order = new List<string>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Visit(string name, bool isRoot)
+        {
+            if (string.IsNullOrWhiteSpace(name) || !visited.Add(name)) return;
+
+            var manifest = _cachedManifests?.FirstOrDefault(m =>
+                string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+
+            if (manifest != null)
+                foreach (var dep in manifest.Dependencies)
+                    Visit(dep, false);
+            else if (!isRoot)
+                Log.Warn($"Зависимость '{name}' не найдена в ModLinks.xml");
+
+            if (!isRoot) order.Add(name);
+        }
+
+        Visit(modName, true);
+        return order;
+    }
+    private static async Task<PublicModDownloadResult> DownloadSingleModAsync(string modName)
     {
         var result = new PublicModDownloadResult { ModName = modName };
 
@@ -174,11 +259,11 @@ public static class PublicModInstaller
 
         result.Success = true;
         result.InstalledFolder = targetFolder;
+        LumaflyRegistry.RecordInstalled(Path.GetFileName(targetFolder), manifest.Version);
         Log.Info($"Мод '{manifest.Name}' установлен: {targetFolder}");
         return result;
     }
 
-    // Скачивает файл мода и сверяет SHA256. При несовпадении перекачивает заново
     private static async Task<byte[]> DownloadVerifiedAsync(PublicModManifest manifest, PublicModDownloadResult result)
     {
         bool hasHash = !string.IsNullOrEmpty(manifest.Sha256);
@@ -232,12 +317,10 @@ public static class PublicModInstaller
         {
             if (RequiredModsChecker.IsModInstalled(name))
             {
-                results.Add(new PublicModDownloadResult
-                {
-                    ModName = name,
-                    Success = true,
-                    InstalledFolder = null
-                });
+                var deps = await InstallMissingDependenciesAsync(name);
+                deps.Success = true;
+                deps.InstalledFolder = deps.InstalledDependencies.Count > 0 ? "dependencies" : null;
+                results.Add(deps);
                 continue;
             }
 

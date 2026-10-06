@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.Install;
 
-// Разбирает ссылку вида https://themulhima.github.io/Lumafly/commands/download/?mods=Satchel/Scattered%20and%20Lost на список имён модов
 public static class LumaflyLinkParser
 {
     public static List<string> ExtractRequiredMods(string lumaflyUrl)
@@ -24,7 +22,7 @@ public static class LumaflyLinkParser
             foreach (var pair in query.Split('&'))
             {
                 var kv = pair.Split(new[] { '=' }, 2);
-                if (kv.Length != 2 || kv[0] != "mods")
+                if (kv.Length != 2 || (kv[0] != "mods" && kv[0] != "list"))
                     continue;
 
                 string decoded = Uri.UnescapeDataString(kv[1]);
@@ -36,7 +34,7 @@ public static class LumaflyLinkParser
         }
         catch (Exception e)
         {
-            Log.Error($"Не удалось разобрать ссылку Lumafly '{lumaflyUrl}': {e.Message}");
+            Modding.Logger.Log($"Не удалось разобрать ссылку Lumafly '{lumaflyUrl}': {e.Message}");
         }
 
         return result;

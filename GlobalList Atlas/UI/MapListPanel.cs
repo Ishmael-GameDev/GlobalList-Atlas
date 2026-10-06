@@ -6,7 +6,9 @@ using System.Threading.Tasks;
 using GlobalListAtlas.Configuration;
 using GlobalListAtlas.Maps;
 using GlobalListAtlas.Net;
+using GlobalListAtlas.Server;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using GlobalListAtlas.Logging;
 
@@ -31,16 +33,21 @@ public class MapListPanel : MonoBehaviour
     private const float StatusBarHeight = 22f;
     private const float FilterRowHeight = 40f;
     private const float CatalogProgressBarHeight = 22f;
+    private const float ArchitectProgressBarHeight = 10f;
+    private const float ArchitectStatusTextHeight = 74f;
+    private const float MirrorRowHeight = 96f;
+    private const float ArchitectStatusIntervalSeconds = 0.5f;
     private const float SearchRowHeight = 28f;
     private const float ActiveMapsRowHeight = 20f;
     private const float RowGap = 4f;
     private const float FavoritesButtonSize = 30f;
     private const string FavoritesGlyph = "♥";
+    private const float TopRowGap = 6f;
 
     private const float TopReservedHeight =
         StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap +
         FilterRowHeight + RowGap + FavoritesButtonSize + RowGap + CatalogProgressBarHeight + RowGap;
-    private const float CatalogRetryIntervalSeconds = 3f;
+    private const float CatalogRetryIntervalSeconds = 10f;
     private const float StatusBarUpdateIntervalSeconds = 0.5f;
 
     private int _heldDirection = 0;
@@ -52,12 +59,24 @@ public class MapListPanel : MonoBehaviour
     private ScrollRect _scrollRect;
     private Text _statusBarText;
     private Text _activeMapsText;
+    private string _activeMapsLastRaw;
+    private float _activeRowHeight = ActiveMapsRowHeight;
+    private RectTransform _activeRect, _searchRect, _filterRowRect, _eventFilterRect, _favRect, _progressRect, _listScrollRoot;
+    private readonly List<RectTransform> _tabRects = new();
     private float _activeMapsTimer;
     private string _searchQuery = "";
     private bool _favoritesOnly;
     private (Button Button, Image Image) _favoritesButton;
     private float _statusBarTimer;
+    private float _archStatusTimer;
+    private float _progressTextExtra;
+    private DateTime? _retryAt;
     private GameObject _catalogProgressGo;
+    private GameObject _mirrorGo;
+    private GameObject _vpnGuideGo;
+    private GameObject _savedCatalogGo;
+    private bool _mirrorOffer;
+    private int _loadGen;
     private Image _catalogProgressFill;
     private Text _catalogProgressText;
     private Button _langRuButton;
@@ -72,6 +91,39 @@ public class MapListPanel : MonoBehaviour
     private readonly List<Image> _buttonImages = new();
     private readonly List<int> _displayEntryIndices = new();
     private readonly Dictionary<League, List<GameObject>> _headerGosByLeague = new();
+
+    private readonly Dictionary<string, List<GameObject>> _headerGosByGroup = new();
+
+    public enum ServerSortMode { UploadDate, Downloads }
+    private ServerSortMode _serverSort = ServerSortMode.UploadDate;
+
+    private bool _showSilksong;
+
+    private class SetFilter<T>
+    {
+        public readonly HashSet<T> Selected = new();
+        public bool ShowAll = true;
+        public void Reset() { Selected.Clear(); ShowAll = true; }
+        public bool Passes(T value) => ShowAll || Selected.Contains(value);
+    }
+
+    private readonly SetFilter<ArchitectSource> _sourceFilter = new();
+    private readonly SetFilter<ServerDifficulty> _difficultyFilter = new();
+    private readonly SetFilter<ServerDuration> _durationFilter = new();
+    private readonly SetFilter<ServerTag> _serverTagFilter = new();
+    private readonly SetFilter<MapStatus> _serverStatusFilter = new();
+
+    private TriFilterMode _seenMode;
+    private bool _likedOnly, _dislikedOnly;
+    private readonly List<(Image Image, Text Text, Func<TriFilterMode> Mode, Color OnColor, string Glyph)> _markFilterButtons = new();
+    private readonly List<RectTransform> _markFilterRects = new();
+
+    private GameObject _serverFilterRow;
+    private RectTransform _serverFilterRect;
+    private Text _sortButtonText;
+    private RectTransform _sortButtonRect;
+
+    private static readonly int[] DownloadThresholds = { 0, 10, 25, 50, 100, 250, 500, 1000 };
     private readonly HashSet<int> _selectedStars = new();
     private bool _starsShowAll = true;
     private readonly HashSet<MapEditor> _selectedEditors = new();
@@ -82,6 +134,17 @@ public class MapListPanel : MonoBehaviour
     private bool _tagsShowAll = true;
     private readonly HashSet<MapStatus> _selectedStatuses = new();
     private bool _statusesShowAll = true;
+
+    private readonly HashSet<EventMapType> _selectedEventTypes = new();
+    private bool _eventTypesShowAll = true;
+
+    private GameObject _globalFilterRow;
+    private GameObject _eventFilterRow;
+    private readonly List<(MapCatalogKind Kind, Image Image, Text Text)> _catalogTabs = new();
+    private readonly Dictionary<MapCatalogKind, RectTransform> _catalogTabRects = new();
+    private (Button Button, Image Image) _devToolsButton;
+    private Image _devToolsIcon;
+    private RectTransform _reloadRect;
     private List<int> _visibleButtonIndices = new();
     private int _selectedButtonIndex = -1;
     private bool _isOpen;
@@ -228,39 +291,99 @@ public class MapListPanel : MonoBehaviour
         CreateOverlay();
         _canvasGo.SetActive(true);
         _isOpen = true;
+        TakeInputFromGameMenu();
         OpenStateChanged?.Invoke(true);
         _ = LoadAndPopulateAsync();
     }
 
     public void Close()
     {
-        // Панель закрывается вместе со всеми окнами поверх неё
         PopupStack.CloseAll();
 
         _isOpen = false;
         if (_canvasGo != null)
             _canvasGo.SetActive(false);
         DestroyOverlay();
+        ReturnInputToGameMenu();
         OpenStateChanged?.Invoke(false);
     }
 
+    private GameObject _gameMenuSelection;
+
+    private static readonly string[] OwnCanvasNames =
+    {
+        "MapListPanelCanvas", "MapDetailsPanelCanvas", "FilterPopupCanvas", "BackupsPopupCanvas", "HelpPopupCanvas"
+    };
+
+    private static bool IsOwnUi(GameObject go) =>
+        go != null && OwnCanvasNames.Contains(go.transform.root.name);
+
+    private void TakeInputFromGameMenu()
+    {
+        var eventSystem = EventSystem.current;
+        if (eventSystem == null) return;
+
+        var selected = eventSystem.currentSelectedGameObject;
+        if (selected != null && !IsOwnUi(selected))
+            _gameMenuSelection = selected;
+
+        eventSystem.SetSelectedGameObject(null);
+    }
+
+    private void ReturnInputToGameMenu()
+    {
+        var eventSystem = EventSystem.current;
+        if (eventSystem != null && _gameMenuSelection != null && _gameMenuSelection.activeInHierarchy)
+            eventSystem.SetSelectedGameObject(_gameMenuSelection);
+
+        _gameMenuSelection = null;
+    }
+
+    private void KeepInputOnPanel()
+    {
+        Cursor.visible = true;
+        Cursor.lockState = CursorLockMode.None;
+
+        var eventSystem = EventSystem.current;
+        var selected = eventSystem != null ? eventSystem.currentSelectedGameObject : null;
+        if (selected != null && !IsOwnUi(selected))
+        {
+            if (_gameMenuSelection == null) _gameMenuSelection = selected;
+            eventSystem.SetSelectedGameObject(null);
+        }
+    }
+
+    private readonly HashSet<MapCatalogKind> _loadingCatalogs = new();
+
     private async Task LoadAndPopulateAsync()
     {
-        if (_isLoading) return;
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null)
+        {
+            _loadError = Localization.Get("error.manager_unavailable");
+            return;
+        }
+
+        var requestedCatalog = manager.CurrentCatalog;
+        int gen = _loadGen;
         _isLoading = true;
         SetCatalogProgressVisible(true);
         SetCatalogProgressIndeterminate(Localization.Get("list.loading_catalog"));
+
+        if (_loadingCatalogs.Contains(requestedCatalog))
+            return;
+
+        _loadingCatalogs.Add(requestedCatalog);
         try
         {
-            var manager = GlobalListAtlasMod.Instance?.DownloadManager;
-            if (manager == null)
-            {
-                _loadError = Localization.Get("error.manager_unavailable");
-                return;
-            }
             var allMaps = await manager.GetAllMapsAsync();
+
+            if (gen != _loadGen || manager.CurrentCatalog != requestedCatalog)
+                return;
+
             _entries.Clear();
             _entries.AddRange(allMaps);
+            ApplyArchitectDuplicates(allMaps);
             RebuildButtons();
             RefreshVisibility();
             if (_canvasGo != null)
@@ -268,22 +391,37 @@ public class MapListPanel : MonoBehaviour
                 _canvasGo.SetActive(_isOpen);
                 OpenStateChanged?.Invoke(_isOpen);
             }
+            _mirrorOffer = false;
             _loadError = null;
         }
         catch (Exception e)
         {
-            _loadError = e.Message;
-            Log.Warn($"[Список карт] Не удалось загрузить каталог: {e.Message}. " +
-                                $"Повтор через {CatalogRetryIntervalSeconds:F0} с...");
+            if (gen != _loadGen) return;
+            if (manager.CurrentCatalog != requestedCatalog)
+            {
+                Log.Warn($"[Список карт] Фоновая загрузка каталога {requestedCatalog} не удалась: {e.Message}");
+            }
+            else
+            {
+                _loadError = e.Message;
+                _mirrorOffer = manager.ServerUnreachable && requestedCatalog == MapCatalogKind.ArchitectServer
+                    && !ArchitectServerConfig.UseMirror;
+                Log.Warn($"[Список карт] Не удалось загрузить каталог: {e.Message}. " +
+                                    $"Повтор через {CatalogRetryIntervalSeconds:F0} с...");
+            }
         }
         finally
         {
-            _isLoading = false;
-            SetCatalogProgressVisible(_loadError != null);
-            if (_loadError != null)
+            if (gen == _loadGen) _loadingCatalogs.Remove(requestedCatalog);
+            if (gen == _loadGen && manager.CurrentCatalog == requestedCatalog)
             {
-                SetCatalogProgressError(_loadError);
-                ScheduleRetry();
+                _isLoading = false;
+                SetCatalogProgressVisible(_loadError != null);
+                if (_loadError != null)
+                {
+                    SetCatalogProgressError(_loadError);
+                    ScheduleRetry();
+                }
             }
         }
     }
@@ -297,18 +435,22 @@ public class MapListPanel : MonoBehaviour
 
     private async Task RetryLoopAsync()
     {
+        int gen = _loadGen;
         try
         {
-            while (_loadError != null && _isOpen)
+            while (_loadError != null && _isOpen
+                   && !(CurrentCatalog == MapCatalogKind.ArchitectServer && ArchitectServerConfig.UseMirror))
             {
+                _retryAt = DateTime.UtcNow.AddSeconds(CatalogRetryIntervalSeconds);
                 await Task.Delay(TimeSpan.FromSeconds(CatalogRetryIntervalSeconds));
-                if (!_isOpen) break;
+                if (!_isOpen || gen != _loadGen) break;
                 await LoadAndPopulateAsync();
             }
         }
         finally
         {
             _retryScheduled = false;
+            _retryAt = null;
         }
     }
 
@@ -318,9 +460,54 @@ public class MapListPanel : MonoBehaviour
             _ = LoadAndPopulateAsync();
     }
 
-    private void OnCatalogLoadProgressChanged(long received, long? total)
+    private static void ApplyArchitectDuplicates(List<MapRow> maps)
     {
-        if (!_isLoading) return;
+        foreach (var map in maps) map.HiddenDuplicate = false;
+        var architect = maps.Where(m => m.Catalog == MapCatalogKind.ArchitectServer).ToList();
+        foreach (var group in DuplicateFinder.FindCandidates(architect))
+            DuplicateFinder.HideOlder(group);
+    }
+
+    private void OnSavedCatalogClicked()
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null || !manager.HasSavedServerCatalog) return;
+
+        _loadGen++;
+        _loadingCatalogs.Clear();
+        _mirrorOffer = false;
+        manager.LoadSavedServerCatalog();
+        _entries.Clear();
+        RebuildButtons();
+        RefreshVisibility();
+        ApplyProgressBarLayout();
+        LayoutTopArea();
+        _ = LoadAndPopulateAsync();
+    }
+
+    private void OnMirrorSwitchClicked()
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null) return;
+
+        ArchitectServerConfig.UseMirror = true;
+        _mirrorOffer = false;
+        _loadGen++;
+        _loadingCatalogs.Clear();
+        manager.CancelServerFetches();
+        manager.InvalidateServerCatalog();
+        _entries.Clear();
+        RebuildButtons();
+        RefreshVisibility();
+        ApplyProgressBarLayout();
+        LayoutTopArea();
+        _ = LoadAndPopulateAsync();
+    }
+
+    private void OnCatalogLoadProgressChanged(MapCatalogKind catalog, long received, long? total)
+    {
+        if (!_isLoading || catalog != CurrentCatalog) return;
+
         if (total.HasValue && total.Value > 0)
         {
             float fraction = Mathf.Clamp01((float)received / total.Value);
@@ -330,12 +517,9 @@ public class MapListPanel : MonoBehaviour
                 _catalogProgressText.text = Localization.Get("catalog.loading_percent",
                     fraction * 100f, FormatBytes(received), FormatBytes(total.Value));
         }
-        else
+        else if (_catalogProgressText != null)
         {
-            if (_catalogProgressFill != null)
-                ((RectTransform)_catalogProgressFill.transform).anchorMax = new Vector2(1, 1);
-            if (_catalogProgressText != null)
-                _catalogProgressText.text = Localization.Get("catalog.loading_bytes", FormatBytes(received));
+            _catalogProgressText.text = Localization.Get("catalog.loading_bytes", FormatBytes(received));
         }
     }
 
@@ -343,6 +527,64 @@ public class MapListPanel : MonoBehaviour
     {
         if (_catalogProgressGo != null)
             _catalogProgressGo.SetActive(visible);
+        ApplyProgressBarLayout();
+        LayoutTopArea();
+    }
+
+    private void ApplyProgressBarLayout()
+    {
+        if (_progressRect == null || _catalogProgressText == null) return;
+
+        bool server = CurrentCatalog == MapCatalogKind.ArchitectServer;
+        _progressRect.sizeDelta = new Vector2(0, server ? ArchitectProgressBarHeight : CatalogProgressBarHeight);
+        _progressTextExtra = server ? ArchitectStatusTextHeight + (_mirrorOffer ? MirrorRowHeight : 0f) : 0f;
+        if (_mirrorGo != null) _mirrorGo.SetActive(server && _mirrorOffer);
+        if (_vpnGuideGo != null) _vpnGuideGo.SetActive(server && _mirrorOffer);
+        if (_savedCatalogGo != null)
+            _savedCatalogGo.SetActive(server && _mirrorOffer && GlobalListAtlasMod.Instance?.DownloadManager?.HasSavedServerCatalog == true);
+
+        var textRect = (RectTransform)_catalogProgressText.transform;
+        textRect.anchorMin = server ? new Vector2(0, 1) : Vector2.zero;
+        textRect.anchorMax = server ? new Vector2(1, 1) : Vector2.one;
+        textRect.pivot = server ? new Vector2(0.5f, 1) : new Vector2(0.5f, 0.5f);
+        textRect.offsetMin = server ? new Vector2(4, -(ArchitectProgressBarHeight + 2f + ArchitectStatusTextHeight)) : Vector2.zero;
+        textRect.offsetMax = server ? new Vector2(-4, -(ArchitectProgressBarHeight + 2f)) : Vector2.zero;
+
+        _catalogProgressText.alignment = server ? TextAnchor.UpperLeft : TextAnchor.MiddleCenter;
+        _catalogProgressText.horizontalOverflow = server ? HorizontalWrapMode.Wrap : HorizontalWrapMode.Overflow;
+        _catalogProgressText.verticalOverflow = server ? VerticalWrapMode.Overflow : VerticalWrapMode.Truncate;
+        _catalogProgressText.fontSize = server ? 12 : 13;
+    }
+
+    private void LayoutTopArea()
+    {
+        if (_activeRect == null || _listScrollRoot == null) return;
+
+        float y = StatusBarHeight + RowGap;
+
+        _activeRect.sizeDelta = new Vector2(0, _activeRowHeight);
+        _activeRect.anchoredPosition = new Vector2(0, -y);
+        y += _activeRowHeight + RowGap;
+
+        _searchRect.anchoredPosition = new Vector2(0, -y);
+        y += SearchRowHeight + RowGap;
+
+        _filterRowRect.anchoredPosition = new Vector2(0, -y);
+        if (_eventFilterRect != null) _eventFilterRect.anchoredPosition = new Vector2(0, -y);
+        if (_serverFilterRect != null) _serverFilterRect.anchoredPosition = new Vector2(0, -y);
+        y += FilterRowHeight + RowGap;
+
+        _favRect.anchoredPosition = new Vector2(_favRect.anchoredPosition.x, -y);
+        foreach (var tab in _tabRects) tab.anchoredPosition = new Vector2(tab.anchoredPosition.x, -y);
+        y += FavoritesButtonSize + RowGap;
+
+        if (_catalogProgressGo != null && _catalogProgressGo.activeSelf)
+        {
+            _progressRect.anchoredPosition = new Vector2(0, -y);
+            y += _progressRect.sizeDelta.y + _progressTextExtra + RowGap;
+        }
+
+        _listScrollRoot.offsetMax = new Vector2(0, -y);
     }
 
     private void SetCatalogProgressIndeterminate(string message)
@@ -351,6 +593,121 @@ public class MapListPanel : MonoBehaviour
             ((RectTransform)_catalogProgressFill.transform).anchorMax = new Vector2(0, 1);
         if (_catalogProgressText != null)
             _catalogProgressText.text = message;
+    }
+
+    private string BuildArchitectStatusText(string error = null)
+    {
+        var now = DateTime.UtcNow;
+        var snapshot = ArchitectLoadStatus.Snapshot();
+        var lines = new List<string>();
+
+        double? longestWait = null;
+        bool anyResponse = false;
+        foreach (var (_, p) in snapshot)
+        {
+            if (p.Responses > 0) anyResponse = true;
+            if (p.RequestSentAt.HasValue)
+                longestWait = Math.Max(longestWait ?? 0, (now - p.RequestSentAt.Value).TotalSeconds);
+        }
+        bool allFailed = snapshot.Count > 0 && snapshot.All(s => s.Progress.State == ArchitectSourceState.Failed);
+
+        string connection = allFailed ? Localization.Get("arch.status.conn_lost")
+            : anyResponse ? Localization.Get("arch.status.conn_ok")
+            : longestWait.HasValue ? Localization.Get("arch.status.conn_wait", (int)longestWait.Value)
+            : Localization.Get("arch.status.conn_connecting");
+
+        string header = ArchitectLoadStatus.StartedAt.HasValue
+            ? Localization.Get("arch.status.elapsed", (int)(now - ArchitectLoadStatus.StartedAt.Value).TotalSeconds) + "  ·  " + connection
+            : connection;
+        lines.Add(header);
+
+        foreach (var (source, p) in snapshot)
+        {
+            string name = ArchitectServerConfig.GetSourceLabel(source);
+            string line = p.State switch
+            {
+                ArchitectSourceState.Failed => Localization.Get("arch.status.source_failed", name, p.Error),
+                ArchitectSourceState.Done => Localization.Get("arch.status.source_done", name, p.Maps),
+                ArchitectSourceState.Waiting => Localization.Get("arch.status.source_waiting", name),
+                _ => p.PagesTotal > 0
+                    ? Localization.Get("arch.status.source_pages", name, p.PagesDone, p.PagesTotal, p.Maps)
+                    : Localization.Get("arch.status.source_loading", name, p.Maps)
+            };
+            if (p.RequestSentAt.HasValue)
+                line += "  " + Localization.Get("arch.status.waiting_reply", (int)(now - p.RequestSentAt.Value).TotalSeconds);
+            lines.Add(line);
+        }
+
+        if (error != null)
+        {
+            string retry = _retryAt.HasValue
+                ? "  " + Localization.Get("arch.status.retry_in", Math.Max(0, (int)(_retryAt.Value - now).TotalSeconds))
+                : "";
+            lines.Add(Localization.Get("list.no_connection_retry", error) + retry);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private void UpdateArchitectProgressFill()
+    {
+        if (_catalogProgressFill == null) return;
+        var snapshot = ArchitectLoadStatus.Snapshot();
+        if (snapshot.Count == 0) return;
+
+        float sum = 0f;
+        foreach (var (_, p) in snapshot)
+        {
+            if (p.State == ArchitectSourceState.Done) sum += 1f;
+            else if (p.PagesTotal > 0) sum += Mathf.Clamp01((float)p.PagesDone / p.PagesTotal);
+        }
+        ((RectTransform)_catalogProgressFill.transform).anchorMax = new Vector2(sum / snapshot.Count, 1);
+    }
+
+    // Высота строки состояния по тексту: длинные ошибки не должны наезжать на кнопку зеркала
+    private void FitArchitectStatusText()
+    {
+        if (_catalogProgressText == null || _progressRect == null) return;
+
+        float width = Mathf.Max(_progressRect.rect.width - 8f, 1f);
+        var settings = _catalogProgressText.GetGenerationSettings(new Vector2(width, 0f));
+        settings.generateOutOfBounds = true;
+        float textHeight = Mathf.Max(ArchitectStatusTextHeight,
+            Mathf.Ceil(new TextGenerator().GetPreferredHeight(_catalogProgressText.text, settings) / _catalogProgressText.pixelsPerUnit) + 4f);
+
+        float bottom = ArchitectProgressBarHeight + 2f + textHeight;
+        var textRect = (RectTransform)_catalogProgressText.transform;
+        textRect.offsetMin = new Vector2(4, -bottom);
+        textRect.offsetMax = new Vector2(-4, -(ArchitectProgressBarHeight + 2f));
+        bool savedVisible = _savedCatalogGo != null && _savedCatalogGo.activeSelf;
+        if (_vpnGuideGo != null)
+            ((RectTransform)_vpnGuideGo.transform).anchoredPosition = new Vector2(0, -(bottom + 4f));
+        if (_savedCatalogGo != null)
+            ((RectTransform)_savedCatalogGo.transform).anchoredPosition = new Vector2(0, -(bottom + 34f));
+        if (_mirrorGo != null)
+            ((RectTransform)_mirrorGo.transform).anchoredPosition = new Vector2(0, -(bottom + (savedVisible ? 64f : 34f)));
+
+        float extra = textHeight + (_mirrorOffer ? MirrorRowHeight : 0f);
+        if (Mathf.Abs(extra - _progressTextExtra) > 0.5f)
+        {
+            _progressTextExtra = extra;
+            LayoutTopArea();
+        }
+    }
+
+    private void UpdateArchitectStatusText()
+    {
+        if (CurrentCatalog != MapCatalogKind.ArchitectServer || !_isOpen) return;
+        if (!_isLoading && _loadError == null) return;
+
+        _archStatusTimer += Time.unscaledDeltaTime;
+        if (_archStatusTimer < ArchitectStatusIntervalSeconds) return;
+        _archStatusTimer = 0f;
+
+        if (_catalogProgressText != null)
+            _catalogProgressText.text = BuildArchitectStatusText(_loadError);
+        UpdateArchitectProgressFill();
+        FitArchitectStatusText();
     }
 
     private void SetCatalogProgressError(string message)
@@ -381,8 +738,8 @@ public class MapListPanel : MonoBehaviour
             GlobalListAtlasMod.Instance.DownloadManager.CatalogLoadProgressChanged += OnCatalogLoadProgressChanged;
             _progressSubscribed = true;
         }
-        // Escape закрывает сначала верхнее окно (фильтр, бекапы, справка), и только
-        // когда окон не осталось — сами панели
+        if (_isOpen) KeepInputOnPanel();
+
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             if (PopupStack.CloseTop()) return;
@@ -390,6 +747,7 @@ public class MapListPanel : MonoBehaviour
         }
 
         UpdateStatusBar();
+        UpdateArchitectStatusText();
         UpdateActiveMapsRow();
         if (!_isOpen) return;
         var inputActions = GameManager.instance?.inputHandler?.inputActions;
@@ -413,18 +771,91 @@ public class MapListPanel : MonoBehaviour
 
     private void UpdateActiveMapsRow()
     {
-        if (_activeMapsText == null) return;
+        if (_activeMapsText == null || !_isOpen) return;
 
         _activeMapsTimer += Time.unscaledDeltaTime;
         if (_activeMapsTimer < 1f) return;
         _activeMapsTimer = 0f;
 
-        string active = ActiveMapResolver.DescribeActiveMaps();
-        _activeMapsText.text = active == null
+        var blocks = ActiveMapResolver.GetActiveMapBlocks();
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        foreach (var (integration, mapName, catalog) in Integrations.PresetManager.GetExclusiveOwners())
+        {
+            var cached = manager?.FindCachedMap(catalog, mapName);
+            if (cached != null) ActiveMapResolver.RememberColor(catalog, mapName, cached.CellColor);
+            var color = cached?.CellColor ?? ActiveMapResolver.GetKnownColor(catalog, mapName) ?? new Color32(0xBB, 0xBB, 0xBB, 0xFF);
+            blocks.Add($"<color=#C9B7F0>{integration}</color> — {Localization.Get("list.preset_of")} " +
+                       $"<color=#{ColorUtility.ToHtmlStringRGB(color)}>{mapName}</color>");
+        }
+
+        string raw = blocks.Count == 0
             ? Localization.Get("list.nothing_launched")
-            : $"{Localization.Get("list.launched_now")}: {active}";
-        // Цвета редактора и лиги приходят в самой строке rich-текстом
-        _activeMapsText.color = active == null ? new Color(0.6f, 0.6f, 0.6f) : Color.white;
+            : $"{Localization.Get("list.launched_now")}:\n" + string.Join("\n", blocks);
+
+        if (raw == _activeMapsLastRaw) return;
+        _activeMapsLastRaw = raw;
+
+        _activeMapsText.color = blocks.Count == 0 ? new Color(0.6f, 0.6f, 0.6f) : Color.white;
+        _activeMapsText.text = blocks.Count == 0
+            ? raw
+            : LayoutBlocks($"{Localization.Get("list.launched_now")}:", blocks);
+
+        float textWidth = Mathf.Max(_activeRect.rect.width - 8f, 1f);
+        var settings = _activeMapsText.GetGenerationSettings(new Vector2(textWidth, 0f));
+        float height = new TextGenerator().GetPreferredHeight(_activeMapsText.text, settings) / _activeMapsText.pixelsPerUnit;
+        float newHeight = Mathf.Max(ActiveMapsRowHeight, Mathf.Ceil(height) + 2f);
+
+        if (!Mathf.Approximately(newHeight, _activeRowHeight))
+        {
+            _activeRowHeight = newHeight;
+            LayoutTopArea();
+        }
+    }
+
+    private string LayoutBlocks(string prefix, List<string> blocks)
+    {
+        const string Separator = "   ·   ";
+
+        Canvas.ForceUpdateCanvases();
+        float width = Mathf.Max(_activeRect.rect.width - 8f, 1f);
+        var settings = _activeMapsText.GetGenerationSettings(Vector2.zero);
+        settings.generateOutOfBounds = true;
+        var generator = new TextGenerator();
+        float Measure(string text) => generator.GetPreferredWidth(text, settings) / _activeMapsText.pixelsPerUnit;
+
+        var lines = new List<string>();
+        string current = prefix;
+        bool currentHasBlock = false;
+
+        string Join(string line, string block) =>
+            string.IsNullOrEmpty(line) ? block : line + (currentHasBlock ? Separator : " ") + block;
+
+        foreach (var block in blocks)
+        {
+            if (Measure(Join(current, block)) <= width)
+            {
+                current = Join(current, block);
+                currentHasBlock = true;
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(current)) lines.Add(current);
+
+            if (Measure(block) <= width)
+            {
+                current = block;
+                currentHasBlock = true;
+            }
+            else
+            {
+                lines.Add(block);
+                current = "";
+                currentHasBlock = false;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(current)) lines.Add(current);
+        return string.Join("\n", lines);
     }
 
     private void UpdateStatusBar()
@@ -580,7 +1011,6 @@ public class MapListPanel : MonoBehaviour
             }
         });
 
-        // Что сейчас запущено и в каком редакторе
         var activeRow = new GameObject("ActiveMapsRow", typeof(RectTransform));
         activeRow.transform.SetParent(panel, false);
         var activeRect = (RectTransform)activeRow.transform;
@@ -590,7 +1020,13 @@ public class MapListPanel : MonoBehaviour
         activeRect.sizeDelta = new Vector2(0, ActiveMapsRowHeight);
         activeRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap));
 
-        _activeMapsText = UIFactory.CreateText(activeRect, "Text", "", 13, TextAnchor.MiddleLeft);
+        _activeRect = activeRect;
+        _activeMapsLastRaw = null;
+        _activeRowHeight = ActiveMapsRowHeight;
+        _activeMapsTimer = 1f;
+        _activeMapsText = UIFactory.CreateText(activeRect, "Text", "", 13, TextAnchor.UpperLeft);
+        _activeMapsText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        _activeMapsText.verticalOverflow = VerticalWrapMode.Overflow;
         var activeTextRect = (RectTransform)_activeMapsText.transform;
         activeTextRect.anchorMin = Vector2.zero;
         activeTextRect.anchorMax = Vector2.one;
@@ -600,6 +1036,7 @@ public class MapListPanel : MonoBehaviour
         // Поиск по названию и автору
         var (searchGo, searchInput) = UIFactory.CreateInputField(panel, "SearchField", Localization.Get("list.search_placeholder"), 15);
         var searchRect = (RectTransform)searchGo.transform;
+        _searchRect = searchRect;
         searchRect.anchorMin = new Vector2(0, 1);
         searchRect.anchorMax = new Vector2(1, 1);
         searchRect.pivot = new Vector2(0.5f, 1);
@@ -614,13 +1051,13 @@ public class MapListPanel : MonoBehaviour
         var filterRow = new GameObject("FilterRow", typeof(RectTransform));
         filterRow.transform.SetParent(panel, false);
         var filterRowRect = (RectTransform)filterRow.transform;
+        _filterRowRect = filterRowRect;
         filterRowRect.anchorMin = new Vector2(0, 1);
         filterRowRect.anchorMax = new Vector2(1, 1);
         filterRowRect.pivot = new Vector2(0.5f, 1);
         filterRowRect.sizeDelta = new Vector2(0, FilterRowHeight);
         filterRowRect.anchoredPosition = new Vector2(0, -(StatusBarHeight + RowGap + ActiveMapsRowHeight + RowGap + SearchRowHeight + RowGap));
         const float filterButtonGap = 4f;
-        // Ширины слотов: у "звёзд" короткая подпись, поэтому слот уже остальных
         float[] slotWeights = { 0.55f, 1f, 1f, 1f, 1f };
         CreateFilterButton(filterRowRect, "StarsFilterButton",
             Localization.Get("list.filter_stars"), 0, slotWeights, filterButtonGap, OpenStarsFilterPopup);
@@ -633,11 +1070,52 @@ public class MapListPanel : MonoBehaviour
         CreateFilterButton(filterRowRect, "StatusFilterButton",
             Localization.Get("list.filter_status"), 4, slotWeights, filterButtonGap, OpenStatusFilterPopup);
         UpdateFavoritesButtonColor();
+        _globalFilterRow = filterRow;
 
-        // Избранное — отдельная небольшая кнопка под панелью фильтров, со своей заливкой
+        var eventFilterRow = new GameObject("EventFilterRow", typeof(RectTransform));
+        eventFilterRow.transform.SetParent(panel, false);
+        var eventFilterRect = (RectTransform)eventFilterRow.transform;
+        _eventFilterRect = eventFilterRect;
+        eventFilterRect.anchorMin = filterRowRect.anchorMin;
+        eventFilterRect.anchorMax = filterRowRect.anchorMax;
+        eventFilterRect.pivot = filterRowRect.pivot;
+        eventFilterRect.sizeDelta = filterRowRect.sizeDelta;
+        eventFilterRect.anchoredPosition = filterRowRect.anchoredPosition;
+        float[] eventSlotWeights = { 1f, 1f, 1f };
+        CreateFilterButton(eventFilterRect, "EventTypeFilterButton",
+            Localization.Get("list.filter_type"), 0, eventSlotWeights, filterButtonGap, OpenEventTypeFilterPopup);
+        CreateFilterButton(eventFilterRect, "EventEditorFilterButton",
+            Localization.Get("list.filter_editor"), 1, eventSlotWeights, filterButtonGap, OpenEditorFilterPopup);
+        CreateFilterButton(eventFilterRect, "EventStatusFilterButton",
+            Localization.Get("list.filter_status"), 2, eventSlotWeights, filterButtonGap, OpenStatusFilterPopup);
+        _eventFilterRow = eventFilterRow;
+
+        var serverFilterRow = new GameObject("ServerFilterRow", typeof(RectTransform));
+        serverFilterRow.transform.SetParent(panel, false);
+        var serverFilterRect = (RectTransform)serverFilterRow.transform;
+        _serverFilterRect = serverFilterRect;
+        serverFilterRect.anchorMin = filterRowRect.anchorMin;
+        serverFilterRect.anchorMax = filterRowRect.anchorMax;
+        serverFilterRect.pivot = filterRowRect.pivot;
+        serverFilterRect.sizeDelta = filterRowRect.sizeDelta;
+        serverFilterRect.anchoredPosition = filterRowRect.anchoredPosition;
+        float[] serverSlotWeights = { 1f, 1f, 1f, 1f, 1f };
+        CreateFilterButton(serverFilterRect, "ServerSourceFilterButton",
+            Localization.Get("list.filter_editor"), 0, serverSlotWeights, filterButtonGap, OpenSourceFilterPopup);
+        CreateFilterButton(serverFilterRect, "ServerDifficultyFilterButton",
+            Localization.Get("list.filter_difficulty"), 1, serverSlotWeights, filterButtonGap, OpenDifficultyFilterPopup);
+        CreateFilterButton(serverFilterRect, "ServerDurationFilterButton",
+            Localization.Get("list.filter_duration"), 2, serverSlotWeights, filterButtonGap, OpenDurationFilterPopup);
+        CreateFilterButton(serverFilterRect, "ServerTagsFilterButton",
+            Localization.Get("list.filter_tags"), 3, serverSlotWeights, filterButtonGap, OpenServerTagsFilterPopup);
+        CreateFilterButton(serverFilterRect, "ServerStatusFilterButton",
+            Localization.Get("list.filter_status"), 4, serverSlotWeights, filterButtonGap, OpenServerStatusFilterPopup);
+        _serverFilterRow = serverFilterRow;
+
         var (favGo, favButton, favImage, favText) = UIFactory.CreateButton(
             panel, "FavoritesToggleButton", FavoritesGlyph, 18);
         var favRect = (RectTransform)favGo.transform;
+        _favRect = favRect;
         favRect.anchorMin = new Vector2(0, 1);
         favRect.anchorMax = new Vector2(0, 1);
         favRect.pivot = new Vector2(0, 1);
@@ -653,8 +1131,167 @@ public class MapListPanel : MonoBehaviour
         favButton.onClick.AddListener(() => ToggleFavoritesFilter(favRect));
         UpdateFavoritesButtonColor();
 
+        _markFilterButtons.Clear();
+        _markFilterRects.Clear();
+        _catalogTabRects.Clear();
+        _catalogTabs.Clear();
+        _tabRects.Clear();
+        foreach (var (name, glyph, getMode, cycle, onColor, glyphColor) in new (string, string, Func<TriFilterMode>, Action, Color, Color)[]
+                 {
+                     ("SeenFilterButton", "●", () => _seenMode, () => _seenMode = NextMode(_seenMode), new Color(0.22f, 0.40f, 0.52f, 1f), new Color(0.62f, 0.85f, 1f, 1f)),
+                     ("LikedFilterButton", "▲", () => _likedOnly ? TriFilterMode.Include : TriFilterMode.Ignore, () => _likedOnly = !_likedOnly, new Color(0.22f, 0.45f, 0.27f, 1f), new Color(0.65f, 1f, 0.68f, 1f)),
+                     ("DislikedFilterButton", "▼", () => _dislikedOnly ? TriFilterMode.Include : TriFilterMode.Ignore, () => _dislikedOnly = !_dislikedOnly, new Color(0.50f, 0.22f, 0.24f, 1f), new Color(1f, 0.66f, 0.66f, 1f))
+                 })
+        {
+            var (markGo, markButton, markImage, markText) = UIFactory.CreateButton(panel, name, glyph, 16);
+            markText.alignment = TextAnchor.MiddleCenter;
+            markText.color = glyphColor;
+            var markTextRect = (RectTransform)markText.transform;
+            markTextRect.offsetMin = new Vector2(0, markTextRect.offsetMin.y);
+            markTextRect.offsetMax = new Vector2(0, markTextRect.offsetMax.y);
+            UIFactory.AddOutline(markGo);
+            var markRect = (RectTransform)markGo.transform;
+            markRect.anchorMin = new Vector2(0, 1);
+            markRect.anchorMax = new Vector2(0, 1);
+            markRect.pivot = new Vector2(0, 1);
+            markRect.sizeDelta = new Vector2(FavoritesButtonSize, FavoritesButtonSize);
+
+            var capturedCycle = cycle;
+            markButton.onClick.AddListener(() =>
+            {
+                capturedCycle();
+                UpdateMarkFilterColors();
+                RefreshVisibility();
+            });
+            _markFilterButtons.Add((markImage, markText, getMode, onColor, glyph));
+            _markFilterRects.Add(markRect);
+            _tabRects.Add(markRect);
+        }
+        UpdateMarkFilterColors();
+
+        foreach (var (kind, key) in new[] { (MapCatalogKind.GlobalList, "catalog.globallist"),
+                                            (MapCatalogKind.EventCommunity, "catalog.events"),
+                                            (MapCatalogKind.ArchitectServer, "catalog.architect") })
+        {
+            var (tabGo, tabButton, tabImage, tabText) = UIFactory.CreateButton(panel, $"CatalogTab_{kind}", Localization.Get(key), 15);
+            tabText.alignment = TextAnchor.MiddleCenter;
+            tabText.horizontalOverflow = HorizontalWrapMode.Overflow;
+            UIFactory.AddOutline(tabGo);
+            var tabRect = (RectTransform)tabGo.transform;
+            tabRect.anchorMin = new Vector2(0, 1);
+            tabRect.anchorMax = new Vector2(0, 1);
+            tabRect.pivot = new Vector2(0, 1);
+            tabRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(tabText, min: 110f), FavoritesButtonSize);
+
+            var capturedKind = kind;
+            tabButton.onClick.AddListener(() => OnCatalogTabClicked(capturedKind));
+            _catalogTabs.Add((kind, tabImage, tabText));
+            _catalogTabRects[kind] = tabRect;
+            _tabRects.Add(tabRect);
+        }
+
+        var (sortGo, sortButton, sortImage, sortText) = UIFactory.CreateButton(panel, "ServerSortButton", SortButtonLabel(), 15);
+        sortText.alignment = TextAnchor.MiddleCenter;
+        sortText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        UIFactory.AddOutline(sortGo);
+        var sortRect = (RectTransform)sortGo.transform;
+        sortRect.anchorMin = new Vector2(1, 1);
+        sortRect.anchorMax = new Vector2(1, 1);
+        sortRect.pivot = new Vector2(1, 1);
+        sortRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(sortText, min: 110f), FavoritesButtonSize);
+        sortRect.anchoredPosition = new Vector2(-(4f + FavoritesButtonSize + TopRowGap), favRect.anchoredPosition.y);
+        sortButton.onClick.AddListener(ToggleServerSort);
+        _sortButtonText = sortText;
+        _sortButtonRect = sortRect;
+        _tabRects.Add(sortRect);
+
+        var (devToolsGo, devToolsButton, devToolsImage, _) = UIFactory.CreateButton(
+            panel, "DevToolsButton", "", 16);
+        UIFactory.AddOutline(devToolsGo);
+        var devToolsIconGo = new GameObject("KeyIcon", typeof(RectTransform), typeof(Image));
+        devToolsIconGo.transform.SetParent(devToolsGo.transform, false);
+        var devToolsIcon = devToolsIconGo.GetComponent<Image>();
+        devToolsIcon.sprite = UIFactory.GetIcon(UIFactory.IconKind.Wrench);
+        devToolsIcon.raycastTarget = false;
+        var devToolsIconRect = (RectTransform)devToolsIconGo.transform;
+        devToolsIconRect.anchorMin = new Vector2(0.5f, 0.5f);
+        devToolsIconRect.anchorMax = new Vector2(0.5f, 0.5f);
+        devToolsIconRect.sizeDelta = new Vector2(FavoritesButtonSize - 8f, FavoritesButtonSize - 8f);
+        devToolsIconRect.anchoredPosition = Vector2.zero;
+        var devToolsRect = (RectTransform)devToolsGo.transform;
+        devToolsRect.anchorMin = new Vector2(1, 1);
+        devToolsRect.anchorMax = new Vector2(1, 1);
+        devToolsRect.pivot = new Vector2(1, 1);
+        devToolsRect.sizeDelta = new Vector2(FavoritesButtonSize, FavoritesButtonSize);
+        devToolsRect.anchoredPosition = new Vector2(-4f, favRect.anchoredPosition.y);
+        _devToolsButton = (devToolsButton, devToolsImage);
+        _devToolsIcon = devToolsIcon;
+        devToolsButton.onClick.AddListener(OnDevToolsClicked);
+        _tabRects.Add(devToolsRect);
+        UpdateDevToolsButtonColor();
+
+        var (reloadGo, reloadButton, reloadImage, _) = UIFactory.CreateButton(panel, "ParserReloadButton", "", 13);
+        reloadImage.color = UIFactory.ButtonBg;
+        var reloadRect = (RectTransform)reloadGo.transform;
+        reloadRect.anchorMin = new Vector2(1, 1);
+        reloadRect.anchorMax = new Vector2(1, 1);
+        reloadRect.pivot = new Vector2(1, 1);
+        reloadRect.sizeDelta = new Vector2(FavoritesButtonSize, FavoritesButtonSize);
+        reloadRect.anchoredPosition = new Vector2(-(4f + FavoritesButtonSize + TopRowGap), favRect.anchoredPosition.y);
+
+        var ringSprite = UIFactory.GetIcon(UIFactory.IconKind.Ring);
+        var ringBgGo = new GameObject("RingBg", typeof(RectTransform), typeof(Image));
+        ringBgGo.transform.SetParent(reloadGo.transform, false);
+        var ringBg = ringBgGo.GetComponent<Image>();
+        ringBg.sprite = ringSprite;
+        ringBg.color = new Color(0.35f, 0.35f, 0.4f, 1f);
+        ringBg.raycastTarget = false;
+        var ringBgRect = (RectTransform)ringBgGo.transform;
+        ringBgRect.sizeDelta = new Vector2(FavoritesButtonSize - 6f, FavoritesButtonSize - 6f);
+
+        var ringFillGo = new GameObject("RingFill", typeof(RectTransform), typeof(Image));
+        ringFillGo.transform.SetParent(reloadGo.transform, false);
+        var ringFill = ringFillGo.GetComponent<Image>();
+        ringFill.sprite = ringSprite;
+        ringFill.color = new Color(0.85f, 0.85f, 0.95f, 1f);
+        ringFill.type = Image.Type.Filled;
+        ringFill.fillMethod = Image.FillMethod.Radial360;
+        ringFill.fillOrigin = (int)Image.Origin360.Top;
+        ringFill.fillClockwise = true;
+        ringFill.fillAmount = 0f;
+        ringFill.raycastTarget = false;
+        var ringFillRect = (RectTransform)ringFillGo.transform;
+        ringFillRect.sizeDelta = new Vector2(FavoritesButtonSize - 6f, FavoritesButtonSize - 6f);
+
+        var reloadHold = reloadGo.AddComponent<HoldToConfirmButton>();
+        reloadHold.Fill = ringFill;
+        reloadHold.OnConfirmed = () =>
+        {
+            var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+            if (manager != null && manager.CurrentCatalog == MapCatalogKind.ArchitectServer)
+            {
+                ArchitectServerConfig.UseMirror = false;
+                _mirrorOffer = false;
+                manager.InvalidateServerCatalog();
+                _entries.Clear();
+                RebuildButtons();
+                RefreshVisibility();
+                _ = LoadAndPopulateAsync();
+            }
+            reloadHold.ResetState();
+        };
+        _reloadRect = reloadRect;
+        _tabRects.Add(reloadRect);
+
+        sortRect.anchoredPosition = new Vector2(
+            -(4f + FavoritesButtonSize + TopRowGap + reloadRect.sizeDelta.x + TopRowGap),
+            favRect.anchoredPosition.y);
+
+        UpdateCatalogUi();
+
         var (progressGo, progressFill, progressText) = UIFactory.CreateProgressBar(panel, "CatalogProgressBar");
         var progressRect = (RectTransform)progressGo.transform;
+        _progressRect = progressRect;
         progressRect.anchorMin = new Vector2(0, 1);
         progressRect.anchorMax = new Vector2(1, 1);
         progressRect.pivot = new Vector2(0.5f, 1);
@@ -666,14 +1303,60 @@ public class MapListPanel : MonoBehaviour
         _catalogProgressText = progressText;
         _catalogProgressGo.SetActive(false);
 
+        var (mirrorGo, mirrorButton, mirrorImage, mirrorLabel) = UIFactory.CreateButton(
+            progressGo.transform, "MirrorSwitchButton", Localization.Get("arch.mirror.offer"), 12);
+        mirrorLabel.alignment = TextAnchor.MiddleCenter;
+        mirrorLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
+        mirrorLabel.color = new Color(1f, 0.72f, 0.6f, 1f);
+        UIFactory.AddOutline(mirrorGo);
+        var mirrorRect = (RectTransform)mirrorGo.transform;
+        mirrorRect.anchorMin = new Vector2(0, 1);
+        mirrorRect.anchorMax = new Vector2(0, 1);
+        mirrorRect.pivot = new Vector2(0, 1);
+        mirrorRect.sizeDelta = new Vector2(280f, 26f);
+        mirrorRect.anchoredPosition = new Vector2(0, -(ArchitectProgressBarHeight + 2f + ArchitectStatusTextHeight + 4f));
+        mirrorButton.onClick.AddListener(OnMirrorSwitchClicked);
+        mirrorGo.SetActive(false);
+        _mirrorGo = mirrorGo;
+
+        var (vpnGuideGo, vpnGuideButton, vpnGuideImage, vpnGuideLabel) = UIFactory.CreateButton(
+            progressGo.transform, "VpnGuideButton", Localization.Get("arch.vpn.guide"), 12);
+        vpnGuideLabel.alignment = TextAnchor.MiddleCenter;
+        vpnGuideLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
+        UIFactory.AddOutline(vpnGuideGo);
+        var vpnGuideRect = (RectTransform)vpnGuideGo.transform;
+        vpnGuideRect.anchorMin = new Vector2(0, 1);
+        vpnGuideRect.anchorMax = new Vector2(0, 1);
+        vpnGuideRect.pivot = new Vector2(0, 1);
+        vpnGuideRect.sizeDelta = new Vector2(280f, 26f);
+        vpnGuideRect.anchoredPosition = new Vector2(0, -(ArchitectProgressBarHeight + 2f + ArchitectStatusTextHeight + 4f));
+        vpnGuideButton.onClick.AddListener(() => HelpPopup.ShowVpnGuide());
+        vpnGuideGo.SetActive(false);
+        _vpnGuideGo = vpnGuideGo;
+
+        var (savedGo, savedButton, savedImage, savedLabel) = UIFactory.CreateButton(
+            progressGo.transform, "SavedCatalogButton", Localization.Get("arch.saved.load"), 12);
+        savedLabel.alignment = TextAnchor.MiddleCenter;
+        savedLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
+        UIFactory.AddOutline(savedGo);
+        var savedRect = (RectTransform)savedGo.transform;
+        savedRect.anchorMin = new Vector2(0, 1);
+        savedRect.anchorMax = new Vector2(0, 1);
+        savedRect.pivot = new Vector2(0, 1);
+        savedRect.sizeDelta = new Vector2(280f, 26f);
+        savedButton.onClick.AddListener(OnSavedCatalogClicked);
+        savedGo.SetActive(false);
+        _savedCatalogGo = savedGo;
+
         var (content, scrollRect) = UIFactory.CreateVerticalScrollList(panel, "MapListScroll");
         _scrollRect = scrollRect;
         var scrollRootRect = (RectTransform)content.parent.parent;
         scrollRootRect.anchorMin = new Vector2(0, 0);
         scrollRootRect.anchorMax = new Vector2(1, 1);
         scrollRootRect.offsetMin = new Vector2(0, 0);
-        scrollRootRect.offsetMax = new Vector2(0, -TopReservedHeight);
+        _listScrollRoot = scrollRootRect;
         _listContent = content;
+        LayoutTopArea();
 
         float langButtonSize = 40f;
         float langButtonGap = 8f;
@@ -734,7 +1417,6 @@ public class MapListPanel : MonoBehaviour
             GlobalListAtlasMod.Instance?.ToggleLanguage();
             RefreshAllUI();
         });
-        //UpdateLanguageButtons(); Бан рекурсии
     }
 
     private void RebuildButtons()
@@ -745,18 +1427,31 @@ public class MapListPanel : MonoBehaviour
         _buttonImages.Clear();
         _displayEntryIndices.Clear();
         _headerGosByLeague.Clear();
-        var orderedIndices = Enumerable.Range(0, _entries.Count)
-            .OrderBy(i => LeagueConfig.GetOrder(_entries[i].League))
-            .ThenBy(i => i)
-            .ToList();
+        _headerGosByGroup.Clear();
+
+        if (CurrentCatalog == MapCatalogKind.ArchitectServer)
+        {
+            RebuildServerButtons();
+            return;
+        }
+
+        bool isEventCatalog = CurrentCatalog == MapCatalogKind.EventCommunity;
+
+        var orderedIndices = isEventCatalog
+            ? Enumerable.Range(0, _entries.Count).ToList()
+            : Enumerable.Range(0, _entries.Count)
+                .OrderBy(i => LeagueConfig.GetOrder(_entries[i].League))
+                .ThenBy(i => i)
+                .ToList();
         League? currentLeague = null;
         foreach (int originalIndex in orderedIndices)
         {
             var entry = _entries[originalIndex];
-            if (currentLeague == null || entry.League != currentLeague)
+            if (!isEventCatalog && (currentLeague == null || entry.League != currentLeague))
             {
+                bool firstHeader = currentLeague == null;
                 currentLeague = entry.League;
-                var headerGos = CreateLeagueHeader(entry.League);
+                var headerGos = CreateLeagueHeader(entry.League, firstHeader);
                 _rowGos.AddRange(headerGos);
                 if (!_headerGosByLeague.TryGetValue(entry.League, out var list))
                 {
@@ -765,7 +1460,9 @@ public class MapListPanel : MonoBehaviour
                 }
                 list.AddRange(headerGos);
             }
-            string label = $"{entry.Name}   {StarsToString(entry.Stars)}";
+            string label = isEventCatalog
+                ? $"{entry.Name}   <size=14>{EventCatalogConfig.GetTypeLabel(entry.EventType)}</size>"
+                : $"{entry.Name}   {StarsToString(entry.Stars)}";
             var (btnGo, button, image, text) = UIFactory.CreateButton(
                 _listContent, $"MapButton_{originalIndex}", label, 20);
             var rect = (RectTransform)btnGo.transform;
@@ -782,15 +1479,106 @@ public class MapListPanel : MonoBehaviour
         _listContent.anchoredPosition = new Vector2(_listContent.anchoredPosition.x, 0f);
     }
 
-    private GameObject[] CreateLeagueHeader(League league)
+    private void RebuildServerButtons()
     {
-        var spacerGo = new GameObject($"Spacer_{league}", typeof(RectTransform));
+        var ordered = Enumerable.Range(0, _entries.Count);
+        ordered = _serverSort == ServerSortMode.UploadDate
+            ? ordered.OrderByDescending(i => _entries[i].Uploaded ?? DateTime.MinValue)
+                .ThenBy(i => _entries[i].ServerOrder).ThenBy(i => _entries[i].Name)
+            : ordered.OrderByDescending(i => _entries[i].Downloads).ThenBy(i => _entries[i].Name);
+
+        string currentGroup = null;
+        foreach (int originalIndex in ordered)
+        {
+            var entry = _entries[originalIndex];
+            string group = GetServerGroupKey(entry);
+            if (group != currentGroup)
+            {
+                bool firstHeader = currentGroup == null;
+                currentGroup = group;
+                var headerGos = CreateGroupHeader(group, GetServerGroupLabel(entry), firstHeader);
+                _rowGos.AddRange(headerGos);
+                _headerGosByGroup[group] = new List<GameObject>(headerGos);
+            }
+
+            var (btnGo, button, image, text) = UIFactory.CreateButton(
+                _listContent, $"MapButton_{originalIndex}", entry.Name, 20);
+            text.alignment = TextAnchor.MiddleLeft;
+            ((RectTransform)text.transform).offsetMax = new Vector2(-170f, -2f);
+            ((RectTransform)btnGo.transform).sizeDelta = new Vector2(0, 44);
+            image.color = entry.CellColor;
+            text.color = GetReadableTextColor(entry.CellColor);
+
+            var statsRect = UIFactory.CreateStatsRow(btnGo.transform, $"↓ {entry.Downloads}",
+                entry.HasServerMetadata ? entry.Likes : null, text.color, 15, 30f);
+            statsRect.anchorMin = new Vector2(1, 0.5f);
+            statsRect.anchorMax = new Vector2(1, 0.5f);
+            statsRect.pivot = new Vector2(1, 0.5f);
+            statsRect.anchoredPosition = new Vector2(-10f, 0f);
+
+            int capturedButtonIndex = _buttonGos.Count;
+            button.onClick.AddListener(() => SelectByButtonIndex(capturedButtonIndex));
+            _rowGos.Add(btnGo);
+            _buttonGos.Add(btnGo);
+            _buttonImages.Add(image);
+            _displayEntryIndices.Add(originalIndex);
+        }
+
+        _listContent.anchoredPosition = new Vector2(_listContent.anchoredPosition.x, 0f);
+    }
+
+    private string GetServerGroupKey(MapRow map)
+    {
+        if (_serverSort == ServerSortMode.Downloads)
+            return "downloads_" + DownloadThresholds.Last(t => map.Downloads >= t);
+
+        return map.Uploaded.HasValue ? map.Uploaded.Value.ToString("yyyy-MM") : "undated";
+    }
+
+    private string GetServerGroupLabel(MapRow map)
+    {
+        if (_serverSort == ServerSortMode.Downloads)
+        {
+            int index = Array.FindLastIndex(DownloadThresholds, t => map.Downloads >= t);
+            int from = DownloadThresholds[index];
+            return index == DownloadThresholds.Length - 1
+                ? $"↓ {from}+"
+                : $"↓ {from}–{DownloadThresholds[index + 1] - 1}";
+        }
+
+        if (!map.Uploaded.HasValue)
+            return Localization.Get("server.group_undated");
+
+        var culture = GlobalListAtlasMod.Instance?.Settings.CurrentLanguage == "ru"
+            ? new System.Globalization.CultureInfo("ru-RU")
+            : new System.Globalization.CultureInfo("en-US");
+        string month = culture.DateTimeFormat.GetMonthName(map.Uploaded.Value.Month);
+        return $"{char.ToUpper(month[0], culture)}{month.Substring(1)} {map.Uploaded.Value.Year}";
+    }
+
+    private GameObject[] CreateGroupHeader(string key, string label, bool firstHeader)
+    {
+        var spacer = firstHeader ? null : AddHeaderSpacer($"Spacer_{key}");
+        var text = UIFactory.CreateText(_listContent, $"Header_{key}", label, 16, TextAnchor.MiddleLeft);
+        ((RectTransform)text.transform).sizeDelta = new Vector2(0, 26);
+        return spacer != null ? new[] { spacer, text.gameObject } : new[] { text.gameObject };
+    }
+
+    private GameObject AddHeaderSpacer(string name)
+    {
+        var spacerGo = new GameObject(name, typeof(RectTransform));
         spacerGo.transform.SetParent(_listContent, false);
         ((RectTransform)spacerGo.transform).sizeDelta = new Vector2(0, 14);
+        return spacerGo;
+    }
+
+    private GameObject[] CreateLeagueHeader(League league, bool firstHeader)
+    {
+        var spacer = firstHeader ? null : AddHeaderSpacer($"Spacer_{league}");
         var text = UIFactory.CreateText(_listContent, $"Header_{league}",
             LeagueConfig.GetLocalizedLabel(league), 16, TextAnchor.MiddleLeft);
         ((RectTransform)text.transform).sizeDelta = new Vector2(0, 26);
-        return new[] { spacerGo, text.gameObject };
+        return spacer != null ? new[] { spacer, text.gameObject } : new[] { text.gameObject };
     }
 
     private static string StarsToString(int stars)
@@ -1026,13 +1814,11 @@ public class MapListPanel : MonoBehaviour
     {
         if (_favoritesButton.Image == null) return;
 
-        // Своя заливка, не общая пара "включено/выключено"
         _favoritesButton.Image.color = _favoritesOnly
             ? new Color(0.478f, 0.192f, 0.255f, 1f)
             : new Color(0.157f, 0.145f, 0.180f, 1f);
     }
 
-    // Поиск идёт по названию и по автору, регистр не важен
     private bool MatchesSearch(MapRow entry)
     {
         if (string.IsNullOrWhiteSpace(_searchQuery)) return true;
@@ -1042,12 +1828,301 @@ public class MapListPanel : MonoBehaviour
             || (entry.Creator?.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
     }
 
+    private static MapCatalogKind CurrentCatalog =>
+        GlobalListAtlasMod.Instance?.DownloadManager?.CurrentCatalog ?? MapCatalogKind.GlobalList;
+
+    private void OnCatalogTabClicked(MapCatalogKind kind)
+    {
+        var manager = GlobalListAtlasMod.Instance?.DownloadManager;
+        if (manager == null || manager.CurrentCatalog == kind) return;
+        if (kind == MapCatalogKind.ArchitectServer)
+        {
+            ArchitectServerConfig.UseMirror = false;
+            _mirrorOffer = false;
+        }
+
+        PopupStack.CloseAll();
+        manager.SetCatalog(kind);
+        ResetAllFilters();
+        UpdateCatalogUi();
+
+        _entries.Clear();
+        RebuildButtons();
+        RefreshVisibility();
+        _ = LoadAndPopulateAsync();
+    }
+
+    private void UpdateCatalogUi()
+    {
+        bool isEvent = CurrentCatalog == MapCatalogKind.EventCommunity;
+
+        bool isServer = CurrentCatalog == MapCatalogKind.ArchitectServer;
+        if (_globalFilterRow != null) _globalFilterRow.SetActive(!isEvent && !isServer);
+        if (_eventFilterRow != null) _eventFilterRow.SetActive(isEvent);
+        if (_serverFilterRow != null) _serverFilterRow.SetActive(isServer);
+
+        foreach (var (kind, image, text) in _catalogTabs)
+        {
+            if (image == null || text == null) continue;
+
+            bool active = kind == CurrentCatalog;
+            image.color = active ? UIFactory.ToggleOnBg : UIFactory.ButtonBg;
+            text.color = UIFactory.GetReadableTextColor(image.color);
+        }
+
+        LayoutCatalogRow();
+    }
+
+    private static bool IsDevToolsMode => GlobalListAtlasMod.Instance?.Settings.IsDevToolsUnlocked == true;
+
+    private void LayoutCatalogRow()
+    {
+        if (_favRect == null || _catalogTabRects.Count == 0) return;
+
+        bool devMode = IsDevToolsMode;
+        foreach (var rect in _markFilterRects) rect.gameObject.SetActive(devMode);
+        if (_sortButtonRect != null) _sortButtonRect.gameObject.SetActive(devMode);
+        if (_reloadRect != null) _reloadRect.gameObject.SetActive(devMode);
+        _catalogTabRects[MapCatalogKind.GlobalList].gameObject.SetActive(!devMode);
+        _catalogTabRects[MapCatalogKind.EventCommunity].gameObject.SetActive(!devMode);
+        _catalogTabRects[MapCatalogKind.ArchitectServer].gameObject.SetActive(devMode);
+
+        var row = new List<RectTransform>();
+        if (devMode)
+        {
+            row.AddRange(_markFilterRects);
+            row.Add(_catalogTabRects[MapCatalogKind.ArchitectServer]);
+        }
+        else
+        {
+            row.Add(_catalogTabRects[MapCatalogKind.GlobalList]);
+            row.Add(_catalogTabRects[MapCatalogKind.EventCommunity]);
+        }
+
+        float x = _favRect.anchoredPosition.x + FavoritesButtonSize + TopRowGap;
+        float y = _favRect.anchoredPosition.y;
+        foreach (var rect in row)
+        {
+            rect.anchoredPosition = new Vector2(x, y);
+            x += rect.sizeDelta.x + TopRowGap;
+        }
+    }
+
+    private void OnDevToolsClicked()
+    {
+        var settings = GlobalListAtlasMod.Instance?.Settings;
+        if (settings == null) return;
+
+        settings.IsDevToolsUnlocked = !settings.IsDevToolsUnlocked;
+        UpdateDevToolsButtonColor();
+
+        var target = settings.IsDevToolsUnlocked ? MapCatalogKind.ArchitectServer : MapCatalogKind.GlobalList;
+        if (CurrentCatalog == target)
+            UpdateCatalogUi();
+        else
+            OnCatalogTabClicked(target);
+    }
+
+    private void UpdateDevToolsButtonColor()
+    {
+        if (_devToolsButton.Image == null) return;
+        bool unlocked = GlobalListAtlasMod.Instance?.Settings.IsDevToolsUnlocked == true;
+        _devToolsButton.Image.color = unlocked ? UIFactory.ToggleOnBg : UIFactory.ButtonBg;
+        if (_devToolsIcon != null)
+            _devToolsIcon.color = UIFactory.GetReadableTextColor(_devToolsButton.Image.color);
+    }
+
+    private void ResetAllFilters()
+    {
+        _starsShowAll = true; _selectedStars.Clear();
+        _editorsShowAll = true; _selectedEditors.Clear();
+        _verificationShowAll = true; _selectedVerification.Clear();
+        _tagsShowAll = true; _selectedTags.Clear();
+        _statusesShowAll = true; _selectedStatuses.Clear();
+        _eventTypesShowAll = true; _selectedEventTypes.Clear();
+        _sourceFilter.Reset();
+        _difficultyFilter.Reset();
+        _durationFilter.Reset();
+        _serverTagFilter.Reset();
+        _showSilksong = false; // Silksong по умолчанию скрыт
+
+        _seenMode = TriFilterMode.Ignore; _likedOnly = false; _dislikedOnly = false;
+        _serverStatusFilter.Reset();
+        UpdateMarkFilterColors();
+    }
+
+    private void OpenEventTypeFilterPopup(RectTransform anchor)
+    {
+        var options = new List<FilterOption>
+        {
+            new() { Label = "Event", IsOn = _selectedEventTypes.Contains(EventMapType.Event),
+                    Value = EventMapType.Event, AccentColor = EventCatalogConfig.EventColor },
+            new() { Label = "PvP", IsOn = _selectedEventTypes.Contains(EventMapType.PvP),
+                    Value = EventMapType.PvP, AccentColor = EventCatalogConfig.PvPColor },
+        };
+
+        MultiToggleFilterPopup.Show(_canvasRoot, anchor, Localization.Get("filter.type.title"), options, _eventTypesShowAll,
+            onShowAllSelected: () =>
+            {
+                _eventTypesShowAll = true;
+                _selectedEventTypes.Clear();
+                RefreshVisibility();
+            },
+            onOptionToggled: option =>
+            {
+                var type = (EventMapType)option.Value;
+                _eventTypesShowAll = false;
+                if (option.IsOn) _selectedEventTypes.Add(type);
+                else
+                {
+                    _selectedEventTypes.Remove(type);
+                    if (_selectedEventTypes.Count == 0) _eventTypesShowAll = true;
+                }
+                RefreshVisibility();
+            });
+    }
+
+    private void ShowSetFilterPopup<T>(RectTransform anchor, string title, SetFilter<T> filter,
+        IEnumerable<(string Label, T Value, Color32? Color)> values, Action afterChange = null)
+    {
+        var options = values.Select(v => new FilterOption
+        {
+            Label = v.Label,
+            IsOn = filter.Selected.Contains(v.Value),
+            Value = v.Value,
+            AccentColor = v.Color
+        }).ToList();
+
+        MultiToggleFilterPopup.Show(_canvasRoot, anchor, title, options, filter.ShowAll,
+            onShowAllSelected: () =>
+            {
+                filter.Reset();
+                afterChange?.Invoke();
+                RefreshVisibility();
+            },
+            onOptionToggled: option =>
+            {
+                var value = (T)option.Value;
+                filter.ShowAll = false;
+                if (option.IsOn) filter.Selected.Add(value);
+                else
+                {
+                    filter.Selected.Remove(value);
+                    if (filter.Selected.Count == 0) filter.ShowAll = true;
+                }
+                afterChange?.Invoke();
+                RefreshVisibility();
+            });
+    }
+
+    private void OpenServerStatusFilterPopup(RectTransform anchor) =>
+        ShowSetFilterPopup(anchor, Localization.Get("filter.status.title"), _serverStatusFilter, new[]
+        {
+            (Localization.Get("filter.status.not_downloaded"), MapStatus.NotDownloaded, (Color32?)new Color32(180, 60, 60, 255)),
+            (Localization.Get("filter.status.installed"), MapStatus.Installed, (Color32?)new Color32(200, 160, 40, 255)),
+            (Localization.Get("filter.status.running"), MapStatus.Running, (Color32?)new Color32(50, 160, 70, 255))
+        });
+
+    private void OpenSourceFilterPopup(RectTransform anchor)
+    {
+        ShowSetFilterPopup(anchor, Localization.Get("filter.editor.title"), _sourceFilter,
+            new[] { ArchitectSource.NewArchitect, ArchitectSource.LegacyArchitect, ArchitectSource.Silksong }
+                .Select(src => (ArchitectServerConfig.GetSourceLabel(src), src,
+                                (Color32?)ArchitectServerConfig.GetSourceColor(src))),
+            afterChange: () => _showSilksong = _sourceFilter.Selected.Contains(ArchitectSource.Silksong));
+    }
+
+    private void OpenDifficultyFilterPopup(RectTransform anchor) =>
+        ShowSetFilterPopup(anchor, Localization.Get("filter.difficulty.title"), _difficultyFilter,
+            new[] { ServerDifficulty.Easy, ServerDifficulty.Medium, ServerDifficulty.Hard, ServerDifficulty.Extreme, ServerDifficulty.None }
+                .Select(d => (d == ServerDifficulty.None ? Localization.Get("server.not_set") : ArchitectServerConfig.GetDifficultyLabel(d),
+                              d, (Color32?)ArchitectServerConfig.GetDifficultyColor(d))));
+
+    private void OpenDurationFilterPopup(RectTransform anchor) =>
+        ShowSetFilterPopup(anchor, Localization.Get("filter.duration.title"), _durationFilter,
+            new[] { ServerDuration.Tiny, ServerDuration.Short, ServerDuration.Medium, ServerDuration.Long, ServerDuration.None }
+                .Select(d => (d == ServerDuration.None ? Localization.Get("server.not_set") : ArchitectServerConfig.GetDurationLabel(d),
+                              d, (Color32?)ArchitectServerConfig.GetDurationColor(d))));
+
+    private void OpenServerTagsFilterPopup(RectTransform anchor) =>
+        ShowSetFilterPopup(anchor, Localization.Get("filter.tags.title"), _serverTagFilter,
+            ((ServerTag[])Enum.GetValues(typeof(ServerTag))).Select(t => (t.ToString(), t, (Color32?)ArchitectServerConfig.GetTagColor(t))));
+
+    private string SortButtonLabel() => _serverSort == ServerSortMode.UploadDate
+        ? Localization.Get("list.sort_by_date")
+        : Localization.Get("list.sort_by_downloads");
+
+    private void ToggleServerSort()
+    {
+        _serverSort = _serverSort == ServerSortMode.UploadDate ? ServerSortMode.Downloads : ServerSortMode.UploadDate;
+        if (_sortButtonText != null)
+        {
+            _sortButtonText.text = SortButtonLabel();
+            if (_sortButtonRect != null)
+                _sortButtonRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(_sortButtonText, min: 110f), FavoritesButtonSize);
+        }
+        RebuildButtons();
+        RefreshVisibility();
+    }
+
+    private static TriFilterMode NextMode(TriFilterMode mode) => (TriFilterMode)(((int)mode + 1) % 3);
+
+    private static bool MarkPasses(TriFilterMode mode, bool has) => mode == TriFilterMode.Ignore || (mode == TriFilterMode.Include) == has;
+
+    private void UpdateMarkFilterColors()
+    {
+        foreach (var (image, text, getMode, onColor, glyph) in _markFilterButtons)
+        {
+            var mode = getMode();
+            if (image != null)
+                image.color = mode switch
+                {
+                    TriFilterMode.Include => onColor,
+                    TriFilterMode.Exclude => new Color(0.42f, 0.10f, 0.10f, 1f),
+                    _ => new Color(0.157f, 0.145f, 0.180f, 1f)
+                };
+            if (text != null) text.text = mode == TriFilterMode.Exclude ? "× " + glyph : glyph;
+        }
+    }
+
+    private bool PassesServerFilters(MapRow entry)
+    {
+        if (entry.Catalog != MapCatalogKind.ArchitectServer) return true;
+
+        if (!_sourceFilter.Passes(entry.ServerSource)) return false;
+
+        bool metadataFilterActive = !_difficultyFilter.ShowAll || !_durationFilter.ShowAll || !_serverTagFilter.ShowAll;
+        if (metadataFilterActive && !entry.HasServerMetadata) return false;
+
+        if (!_difficultyFilter.Passes(entry.Difficulty)) return false;
+        if (!_durationFilter.Passes(entry.Duration)) return false;
+        if (!_serverTagFilter.ShowAll && !entry.ServerTags.Any(_serverTagFilter.Selected.Contains)) return false;
+        if (!_serverStatusFilter.Passes(GetMapStatus(entry))) return false;
+
+        return true;
+    }
+
     private bool PassesFilters(MapRow entry)
     {
+        if (entry.HiddenDuplicate) return false;
+
+        if (entry.Catalog == MapCatalogKind.ArchitectServer &&
+            entry.ServerSource == ArchitectSource.Silksong && !_showSilksong)
+            return false;
+
         if (!MatchesSearch(entry))
             return false;
 
         if (_favoritesOnly && !FavoritesStore.IsFavorite(entry))
+            return false;
+
+        if (!MarkPasses(_seenMode, MapMarksStore.IsSeen(entry))) return false;
+        if (_likedOnly && MapMarksStore.GetReaction(entry) != MapReaction.Liked) return false;
+        if (_dislikedOnly && MapMarksStore.GetReaction(entry) != MapReaction.Disliked) return false;
+
+        if (!PassesServerFilters(entry)) return false;
+
+        if (!_eventTypesShowAll && !_selectedEventTypes.Contains(entry.EventType))
             return false;
 
         if (!_starsShowAll && !_selectedStars.Contains(Mathf.Clamp(entry.Stars, 0, 5)))
@@ -1069,7 +2144,6 @@ public class MapListPanel : MonoBehaviour
                     passesStatus = true;
                     break;
                 }
-                // Запущенная карта считается и установленной
                 if (selectedStatus == MapStatus.Installed && currentStatus == MapStatus.Running)
                 {
                     passesStatus = true;
@@ -1095,6 +2169,12 @@ public class MapListPanel : MonoBehaviour
         {
             League league = kvp.Key;
             bool anyVisible = _entries.Where(e => e.League == league).Any(PassesFilters);
+            foreach (var go in kvp.Value) go.SetActive(anyVisible);
+        }
+        foreach (var kvp in _headerGosByGroup)
+        {
+            string group = kvp.Key;
+            bool anyVisible = _entries.Where(e => GetServerGroupKey(e) == group).Any(PassesFilters);
             foreach (var go in kvp.Value) go.SetActive(anyVisible);
         }
         if (_selectedButtonIndex < 0 || !_visibleButtonIndices.Contains(_selectedButtonIndex))

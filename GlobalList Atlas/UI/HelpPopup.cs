@@ -17,11 +17,14 @@ public static class HelpPopup
     private const string RepositoryUrl = "https://github.com/Ishmael-GameDev/GlobalList-Atlas";
     private const string ResourceSuffix = "README.md";
 
-    // Заголовки языковых разделов внутри README
     private const string RussianHeading = "# Русский";
     private const string EnglishHeading = "# English";
 
-    public static GameObject Show()
+    public static GameObject Show() => ShowDocument(Localization.Get("help.title"), GetSectionForCurrentLanguage(), true);
+
+    public static GameObject ShowVpnGuide() => ShowDocument(VpnGuide.Title(), VpnGuide.Markdown(), false);
+
+    private static GameObject ShowDocument(string title, string markdown, bool withRepoLink)
     {
         UIFactory.CreateRootCanvas("HelpPopupCanvas", out var popupCanvasGo).sortingOrder = 20000;
 
@@ -44,8 +47,8 @@ public static class HelpPopup
         card.sizeDelta = new Vector2(940, 660);
         card.anchoredPosition = Vector2.zero;
 
-        var title = UIFactory.CreateText(card, "Title", Localization.Get("help.title"), 20, TextAnchor.MiddleCenter);
-        var titleRect = (RectTransform)title.transform;
+        var titleText = UIFactory.CreateText(card, "Title", title, 20, TextAnchor.MiddleCenter);
+        var titleRect = (RectTransform)titleText.transform;
         titleRect.anchorMin = new Vector2(0, 1);
         titleRect.anchorMax = new Vector2(1, 1);
         titleRect.pivot = new Vector2(0.5f, 1);
@@ -57,23 +60,25 @@ public static class HelpPopup
         scrollRoot.offsetMax = new Vector2(0, -42);
         scrollRoot.offsetMin = new Vector2(0, 46);
 
-        AddDocumentText(content, ToRichText(GetSectionForCurrentLanguage()));
+        AddDocumentText(content, ToRichText(markdown));
 
-        var (linkGo, linkButton, linkImage, linkText) = UIFactory.CreateButton(
-            card, "OpenRepoButton", Localization.Get("help.open_github"), 15);
-        linkText.alignment = TextAnchor.MiddleCenter;
-        linkText.horizontalOverflow = HorizontalWrapMode.Overflow;
-        // Синеватая заливка: ссылка на репозиторий не должна читаться как кнопка закрытия
-        linkImage.color = new Color(0.192f, 0.310f, 0.471f, 1f);
-        linkText.color = UIFactory.GetReadableTextColor(linkImage.color);
-        UIFactory.AddOutline(linkGo);
-        var linkRect = (RectTransform)linkGo.transform;
-        linkRect.anchorMin = new Vector2(0, 0);
-        linkRect.anchorMax = new Vector2(0, 0);
-        linkRect.pivot = new Vector2(0, 0);
-        linkRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(linkText, min: 200f), 32);
-        linkRect.anchoredPosition = new Vector2(12, 10);
-        linkButton.onClick.AddListener(() => SystemUtils.OpenUrl(RepositoryUrl));
+        if (withRepoLink)
+        {
+            var (linkGo, linkButton, linkImage, linkText) = UIFactory.CreateButton(
+                card, "OpenRepoButton", Localization.Get("help.open_github"), 15);
+            linkText.alignment = TextAnchor.MiddleCenter;
+            linkText.horizontalOverflow = HorizontalWrapMode.Overflow;
+            linkImage.color = new Color(0.192f, 0.310f, 0.471f, 1f);
+            linkText.color = UIFactory.GetReadableTextColor(linkImage.color);
+            UIFactory.AddOutline(linkGo);
+            var linkRect = (RectTransform)linkGo.transform;
+            linkRect.anchorMin = new Vector2(0, 0);
+            linkRect.anchorMax = new Vector2(0, 0);
+            linkRect.pivot = new Vector2(0, 0);
+            linkRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(linkText, min: 200f), 32);
+            linkRect.anchoredPosition = new Vector2(12, 10);
+            linkButton.onClick.AddListener(() => SystemUtils.OpenUrl(RepositoryUrl));
+        }
 
         PopupStack.Register(popupCanvasGo);
         return popupCanvasGo;

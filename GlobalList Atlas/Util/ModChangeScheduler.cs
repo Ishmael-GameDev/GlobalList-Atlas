@@ -74,7 +74,6 @@ public static class ModChangeScheduler
         {
             string psFrom = Ps(from);
             string psTo = Ps(to);
-            // Копируем поверх и удаляем исходник: Move-Item падает, если папка назначения уже есть
             sb.Append($"if (Test-Path -LiteralPath '{psFrom}') {{ ");
             sb.Append($"New-Item -ItemType Directory -Force -Path '{psTo}' | Out-Null; ");
             sb.Append($"Copy-Item -Path '{psFrom}\\*' -Destination '{psTo}' -Recurse -Force; ");
@@ -111,7 +110,6 @@ public static class ModChangeScheduler
         return new ProcessStartInfo("/bin/sh", $"-c \"{sb}\"");
     }
 
-    // В PowerShell одинарные кавычки экранируются удвоением
     private static string Ps(string path) => path.Replace("'", "''");
 
     private static string Sh(string path) => path.Replace("\\", "\\\\").Replace("\"", "\\\"");

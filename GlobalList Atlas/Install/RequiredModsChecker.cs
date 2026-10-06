@@ -7,7 +7,6 @@ using Modding;
 
 namespace GlobalListAtlas.Install;
 
-// Проверяет, установлены ли публичные моды, требуемые картой.
 public static class RequiredModsChecker
 {
     public static List<int> GetMissingModIndices(List<string> requiredMods)
@@ -28,11 +27,9 @@ public static class RequiredModsChecker
     public static bool AllRequiredModsInstalled(List<string> requiredMods) =>
         GetMissingModIndices(requiredMods).Count == 0;
 
-    // Мод считается установленным, если он загружен Modding API, либо уже лежит в папке Mods и ждёт перезапуска игры
     public static bool IsModInstalled(string modName) =>
         IsModLoaded(modName) || IsModPendingRestart(modName);
 
-    // Мод реально загружен в текущей сессии игры (штатный способ Modding API).
     public static bool IsModLoaded(string modName)
     {
         if (string.IsNullOrWhiteSpace(modName))
@@ -48,7 +45,6 @@ public static class RequiredModsChecker
         }
     }
 
-    // Мод не загружен, но его папка уже есть в Mods
     public static bool IsModPendingRestart(string modName)
     {
         if (string.IsNullOrWhiteSpace(modName) || IsModLoaded(modName))
@@ -72,7 +68,6 @@ public static class RequiredModsChecker
         }
     }
 
-    // Имена в ModLinks и названия папок иногда расходятся регистром и пробелами
     private static string Normalize(string name) =>
         new string(name.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
 }

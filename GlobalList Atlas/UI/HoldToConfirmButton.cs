@@ -57,9 +57,22 @@ public class HoldToConfirmButton : MonoBehaviour, IPointerDownHandler, IPointerU
         if (Label != null && !string.IsNullOrEmpty(IdleLabel)) { Label.text = IdleLabel; OnLabelChanged?.Invoke(); }
     }
 
+    public void ResetState()
+    {
+        _fired = false;
+        _holding = false;
+        _heldFor = 0f;
+        SetFill(0f);
+    }
+
     private void SetFill(float progress)
     {
         if (Fill == null) return;
+        if (Fill.type == Image.Type.Filled)
+        {
+            Fill.fillAmount = progress;
+            return;
+        }
         var rect = (RectTransform)Fill.transform;
         rect.anchorMax = new Vector2(progress, 1f);
     }

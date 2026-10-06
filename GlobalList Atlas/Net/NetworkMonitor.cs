@@ -25,7 +25,6 @@ public class NetworkMonitor : MonoBehaviour
         }
     }
 
-    // Используем системные HTTP-эндпоинты проверки связи.
     private static readonly string[] ProbeUrls = new[]
     {
         "http://connectivitycheck.gstatic.com/generate_204",
@@ -54,10 +53,27 @@ public class NetworkMonitor : MonoBehaviour
 
     private void OnDestroy() => _cts?.Cancel();
 
+    private const float GameplayCheckIntervalSeconds = 1f;
+
+    private static bool IsMenuOpen() => UI.MapListPanel.Instance?.IsOpen == true;
+
+    private static bool IsInGameplayScene()
+    {
+        try { return GameManager.instance != null && GameManager.instance.IsGameplayScene(); }
+        catch { return false; }
+    }
+
     private async Task RunLoopAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
+            if (IsInGameplayScene() || !IsMenuOpen())
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(GameplayCheckIntervalSeconds), token); }
+                catch (TaskCanceledException) { }
+                continue;
+            }
+
             bool wasOnline = IsOnline;
             await ProbeOnceAsync(token);
 
@@ -75,7 +91,6 @@ public class NetworkMonitor : MonoBehaviour
 
     private async Task ProbeOnceAsync(CancellationToken token)
     {
-        // 1. Если прямо сейчас качаются байты — сеть 100% есть
         if (BandwidthTracker.GetBytesPerSecond() > 0)
         {
             IsOnline = true;
@@ -100,22 +115,16 @@ public class NetworkMonitor : MonoBehaviour
                 {
                     success = true;
                     ping = (float)sw.Elapsed.TotalMilliseconds;
-                    Log.Info($"Сеть есть (HTTP пинг {url}). Пинг: {ping:F0} мс");
                     break;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Warn($"Сбой пинга к {url}: {ex.Message}");
             }
         }
 
         IsOnline = success;
         LastPingMs = success ? ping : -1f;
 
-        if (!success)
-        {
-            Log.Error("Сеть не обнаружена (все HTTP пинги провалились).");
-        }
     }
 }

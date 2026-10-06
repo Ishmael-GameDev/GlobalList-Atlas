@@ -8,11 +8,13 @@ using UnityEngine.UI;
 
 namespace GlobalListAtlas.UI;
 
+public enum TriFilterMode { Ignore, Include, Exclude }
+
 public class FilterOption
 {
     public string Label;
     public bool IsOn;
-    public object Value; // произвольное значение фильтра (например, число звёзд)
+    public object Value;
 
     public Color32? AccentColor;
 }
@@ -29,15 +31,13 @@ public static class MultiToggleFilterPopup
 
     public static GameObject Show(
         Transform canvasParent,
-        RectTransform anchorNear, // под какой кнопкой открыть (например, кнопка "Фильтр")
+        RectTransform anchorNear,
         string title,
         List<FilterOption> options,
         bool showAllIsOn,
         Action onShowAllSelected,
         Action<FilterOption> onOptionToggled)
     {
-        // Полотна списка и деталей — разные, поэтому плашке нужно своё,
-        // с более высоким sortingOrder, иначе она уходит под панель деталей.
         UIFactory.CreateRootCanvas("FilterPopupCanvas", out var popupCanvasGo).sortingOrder = 20000;
 
         var overlayGo = new GameObject("FilterPopupOverlay", typeof(RectTransform), typeof(Image));
@@ -49,7 +49,7 @@ public static class MultiToggleFilterPopup
         overlayRect.offsetMax = Vector2.zero;
 
         var overlayImage = overlayGo.GetComponent<Image>();
-        overlayImage.color = new Color(0, 0, 0, 0.55f); // перекрывает всё, блокирует клики под собой
+        overlayImage.color = new Color(0, 0, 0, 0.55f);
 
         var overlayButton = overlayGo.AddComponent<Button>();
         overlayButton.transition = Selectable.Transition.None;
@@ -63,16 +63,13 @@ public static class MultiToggleFilterPopup
             card.pivot = new Vector2(0, 1);
             var corners = new Vector3[4];
             anchorNear.GetWorldCorners(corners);
-            card.position = corners[0]; // нижний левый угол кнопки-фильтра
+            card.position = corners[0];
         }
         else
         {
             card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
             card.anchoredPosition = Vector2.zero;
         }
-
-        // Клик по самой карточке не должен закрывать попап — блокируем всплытие через отдельный Image-блокер.
-        // (Image уже есть из CreatePanel — этого достаточно, чтобы карточка сама ловила клики и не пробрасывала их на оверлей.)
 
         var titleText = UIFactory.CreateText(card, "Title", title, 20, TextAnchor.MiddleCenter);
         var titleRect = (RectTransform)titleText.transform;
@@ -103,13 +100,11 @@ public static class MultiToggleFilterPopup
 
                 if (option.IsOn)
                 {
-                    // Включение любого обычного пункта сразу гасит "Показать все".
                     showAllIsOn = false;
                     ApplyToggleVisual(showAllImage, showAllTextComp, showAllCheckmark, false, null);
                 }
                 else if (options.All(o => !o.IsOn))
                 {
-                    // Ничего больше не выбрано — возвращаемся к состоянию "Показать все".
                     showAllIsOn = true;
                     ApplyToggleVisual(showAllImage, showAllTextComp, showAllCheckmark, true, null);
                 }
@@ -159,7 +154,7 @@ public static class MultiToggleFilterPopup
         checkboxRect.anchoredPosition = new Vector2(CheckboxLeftPadding, 0);
         checkboxGo.GetComponent<Image>().color = CheckboxBoxColor;
 
-        var checkmarkText = UIFactory.CreateText(checkboxRect, "Checkmark", "\u2713", 16, TextAnchor.MiddleCenter);
+        var checkmarkText = UIFactory.CreateText(checkboxRect, "Checkmark", "✓", 16, TextAnchor.MiddleCenter);
         checkmarkText.color = CheckboxMarkColor;
         var checkmarkRect = (RectTransform)checkmarkText.transform;
         checkmarkRect.anchorMin = Vector2.zero;
@@ -167,7 +162,6 @@ public static class MultiToggleFilterPopup
         checkmarkRect.offsetMin = Vector2.zero;
         checkmarkRect.offsetMax = Vector2.zero;
 
-        // Подпись по центру строки, с полями под чекбокс с обеих сторон
         var textRect = (RectTransform)text.transform;
         textRect.offsetMin = new Vector2(CheckboxLeftPadding + CheckboxSize + CheckboxToLabelGap, textRect.offsetMin.y);
         textRect.offsetMax = new Vector2(-(CheckboxLeftPadding + CheckboxSize), textRect.offsetMax.y);
@@ -194,7 +188,6 @@ public static class MultiToggleFilterPopup
         Color.RGBToHSV(c, out float h, out float sat, out _);
         return Color.HSVToRGB(h, Mathf.Clamp01(sat * saturationBoost), Mathf.Clamp01(value));
     }
-
 
     private static Color GetReadableTextColor(Color bg)
     {

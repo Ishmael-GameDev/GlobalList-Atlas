@@ -15,10 +15,8 @@ public enum MapEditor
     CustomEngine
 }
 
-// Реестр редакторов карт (столбец F таблицы) и их цветов
 public static class EditorConfig
 {
-    // Разделитель редакторов внутри одной ячейки столбца F (совпадает с разделителем тегов)
     public const string EditorSeparator = ", ";
     public static readonly (MapEditor Editor, string Label, Color32 Color)[] Palette =
     {
@@ -32,7 +30,6 @@ public static class EditorConfig
     private static readonly Dictionary<string, MapEditor> LabelToEditor =
         Palette.ToDictionary(p => p.Label, p => p.Editor, StringComparer.Ordinal);
 
-    // Разбирает содержимое ячейки столбца F ("Editor1, Editor2, ...") в список редакторов
     public static List<MapEditor> ParseEditors(string rawCellValue)
     {
         var result = new List<MapEditor>();

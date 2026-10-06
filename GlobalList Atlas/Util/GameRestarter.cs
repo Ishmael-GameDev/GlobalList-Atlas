@@ -20,7 +20,6 @@ public static class GameRestarter
 
         Log.Info($"[GameRestarter] Перезапуск запланирован: {exePath}");
 
-        // Скрипт уже ждёт нашего выхода — можно закрываться
         Application.Quit();
         return null;
     }

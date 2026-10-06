@@ -132,7 +132,7 @@ public static class MapSheetParser
                 }
             }
 
-            string linkCellRefUnused = linkCellRef; // (оставлено для читаемости диагностики выше)
+            string linkCellRefUnused = linkCellRef;
 
             string creator = cellsByColumn.TryGetValue(SheetConfig.CreatorColumn, out var creatorVal) ? creatorVal.Trim() : "";
 

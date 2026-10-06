@@ -14,7 +14,6 @@ public enum ModState
     Disabled
 }
 
-// Общее управление модами на диске
 public static class ModFolderManager
 {
     public static ModState GetState(string modFolderName)
@@ -27,7 +26,6 @@ public static class ModFolderManager
         return ModState.NotInstalled;
     }
 
-    // Включает/выключает мод переносом его папки
     public static string SetEnabled(string modFolderName, bool enable)
     {
         if (string.IsNullOrWhiteSpace(modFolderName))
@@ -55,6 +53,7 @@ public static class ModFolderManager
             }
 
             Log.Info($"Мод '{modFolderName}' {(enable ? "включён" : "выключен")}");
+            LumaflyRegistry.SetEnabled(modFolderName, enable);
             return null;
         }
         catch (Exception e)
@@ -64,8 +63,6 @@ public static class ModFolderManager
         }
     }
 
-    // Копирует дерево поверх существующего, затирая одноимённые файлы.
-    // Чужие файлы в папке назначения не трогаются — удаляется только исходная папка.
     private static void MergeOverwrite(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -77,7 +74,6 @@ public static class ModFolderManager
             MergeOverwrite(dir, Path.Combine(targetDir, Path.GetFileName(dir)));
     }
 
-    // Переключает мод: сначала пробует прямо сейчас, а если dll заблокирована процессом игры (так бывает с загруженным модом), откладывает изменение до выхода из игры
     public static string SetEnabledOrDefer(string modFolderName, bool enable, out bool deferred)
     {
         deferred = false;
@@ -85,7 +81,6 @@ public static class ModFolderManager
         if (string.IsNullOrWhiteSpace(modFolderName))
             return "Не указано имя мода";
 
-        // Уже отложенное изменение просто переписываем — на диск лезть незачем
         if (PendingModChanges.IsPending(modFolderName))
         {
             PendingModChanges.Set(modFolderName, enable);
@@ -108,14 +103,12 @@ public static class ModFolderManager
         return error;
     }
 
-    // Папка на месте, но перенести не вышло — значит, файлы держит сам процесс игры
     private static bool IsLockedError(string modFolderName, bool enable)
     {
         string from = enable ? DisabledPath(modFolderName) : EnabledPath(modFolderName);
         return SafeDirExists(from);
     }
 
-    // Имена папок всех сейчас ВКЛЮЧЁННЫХ модов (папка Disabled не считается)
     public static HashSet<string> GetEnabledModFolders()
     {
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -140,7 +133,6 @@ public static class ModFolderManager
         return result;
     }
 
-    // Имя папки мода по имени в ModLinks
     public static string ResolveFolderName(string modName)
     {
         if (string.IsNullOrWhiteSpace(modName))
@@ -164,7 +156,7 @@ public static class ModFolderManager
 
                 if (match != null) return match;
             }
-            catch { /* каталог недоступен — пробуем следующий */ }
+            catch {  }
         }
 
         return modName;

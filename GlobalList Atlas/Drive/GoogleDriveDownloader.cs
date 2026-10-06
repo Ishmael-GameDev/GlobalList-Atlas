@@ -14,6 +14,7 @@ namespace GlobalListAtlas.Drive;
 public static class GoogleDriveDownloader
 {
     private static readonly Regex FileIdRegex = new(@"/d/([a-zA-Z0-9_-]+)");
+    private static readonly Regex IdParamRegex = new(@"[?&]id=([a-zA-Z0-9_-]+)");
     private static readonly Regex FormActionRegex = new(@"<form[^>]*action=[""']([^""']+)[""']", RegexOptions.IgnoreCase);
     private static readonly Regex InputTagRegex = new(@"<input[^>]+>", RegexOptions.IgnoreCase);
     private static readonly Regex NameAttrRegex = new(@"name=[""']([^""']+)[""']", RegexOptions.IgnoreCase);
@@ -25,10 +26,10 @@ public static class GoogleDriveDownloader
             return null;
 
         var match = FileIdRegex.Match(driveUrl);
+        if (!match.Success) match = IdParamRegex.Match(driveUrl);
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    // Размер файла на Google Drive без скачивания: запрашиваем только заголовки
     public static async Task<long?> TryGetFileSizeAsync(string driveUrl)
     {
         var fileId = ExtractFileId(driveUrl);
@@ -52,7 +53,6 @@ public static class GoogleDriveDownloader
 
             var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
 
-            // Большой файл — Drive отдаёт страницу подтверждения, реальный размер за ней
             if (contentType.Contains("text/html"))
             {
                 string html = await response.Content.ReadAsStringAsync();
@@ -147,7 +147,6 @@ public static class GoogleDriveDownloader
         return bytes;
     }
 
-    // Собирает ссылку на скачивание из формы подтверждения, которую Drive показывает
     private static string BuildConfirmedDownloadUrl(string html, string fileId)
     {
         var formMatch = FormActionRegex.Match(html);

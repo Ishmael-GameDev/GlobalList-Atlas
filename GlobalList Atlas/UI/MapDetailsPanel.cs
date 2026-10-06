@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using GlobalListAtlas.Configuration;
 using GlobalListAtlas.Install;
+using GlobalListAtlas.Integrations;
 using GlobalListAtlas.Logging;
 using GlobalListAtlas.Maps;
 using GlobalListAtlas.Util;
@@ -43,6 +45,10 @@ public class MapDetailsPanel : MonoBehaviour
     private const float ReinstallButtonHeight = 30f;
     private const float HeaderRowHeight = 30f;
     private const float CloseButtonReserve = 46f;
+    private const float HeaderButtonGap = 6f;
+    private GameObject _openSheetGo;
+    private GameObject _vpnButtonGo;
+    private static bool IsDevMode => GlobalListAtlasMod.Instance?.Settings.IsDevToolsUnlocked == true;
     private const float ReinstallButtonWidthFraction = 0.5f;
 
     private Button _favoriteButton;
@@ -60,7 +66,6 @@ public class MapDetailsPanel : MonoBehaviour
     private readonly List<GameObject> _contentGos = new();
     private Button _downloadButton;
     private Text _downloadButtonText;
-    private bool _downloadInProgress;
     private bool _launchInProgress;
     private Image _downloadProgressFill;
     private Text _downloadProgressText;
@@ -79,6 +84,7 @@ public class MapDetailsPanel : MonoBehaviour
     private bool _autoSaveSubscribed;
     private void Update()
     {
+        UpdateVpnButtonVisibility();
         if (!_subscribed && MapListPanel.Instance != null)
         {
             MapListPanel.Instance.SelectionChanged += OnSelectionChanged;
@@ -115,7 +121,6 @@ public class MapDetailsPanel : MonoBehaviour
 
         ShowNotification(Localization.Get(key), bgColor);
     }
-    // Обновляет все тексты панели при смене языка
     public void RefreshLanguage()
     {
         if (_currentMap != null)
@@ -152,7 +157,7 @@ public class MapDetailsPanel : MonoBehaviour
     }
     private void OnMapDownloadProgressChanged(MapRow map, long received, long? total)
     {
-        if (_currentMap == null || _currentMap.Name != map.Name) return;
+        if (!IsSameMap(_currentMap, map)) return;
         UpdateDownloadProgressBar(received, total);
     }
 
@@ -207,7 +212,6 @@ public class MapDetailsPanel : MonoBehaviour
     private void OnSelectionChanged(MapRow map)
     {
         _currentMap = map;
-        _downloadInProgress = false;
         _launchInProgress = false;
         _installPublicModsInProgress = false;
         RefreshContent();
@@ -225,8 +229,6 @@ public class MapDetailsPanel : MonoBehaviour
         panel.offsetMax = new Vector2(
             -MapListPanel.ScreenPadding + MapListPanel.PanelHorizontalShift - PanelRightReduction,
             -MapListPanel.ScreenPadding);
-        // Действия над картой — в шапке панели, а не внутри описания.
-        // Справа оставлено место под кнопку закрытия, чтобы её не перекрывать.
         var headerRow = new GameObject("HeaderActions", typeof(RectTransform));
         headerRow.transform.SetParent(panel, false);
         var headerRect = (RectTransform)headerRow.transform;
@@ -266,9 +268,11 @@ public class MapDetailsPanel : MonoBehaviour
         linkRect.sizeDelta = new Vector2(UIFactory.MeasureButtonWidth(linkText, min: 150f), 0);
         linkRect.anchoredPosition = new Vector2(favRect.sizeDelta.x + 16f, 0);
         _openSheetButton = linkButton;
+        _openSheetGo = linkGo;
         linkButton.onClick.AddListener(OnOpenSheetClicked);
 
-        var (content, _) = UIFactory.CreateVerticalScrollList(panel, "DetailsScroll");
+        var (content, detailsScroll) = UIFactory.CreateVerticalScrollList(panel, "DetailsScroll");
+        _detailsScroll = detailsScroll;
         var scrollRoot = (RectTransform)content.parent.parent;
         scrollRoot.offsetMax = new Vector2(scrollRoot.offsetMax.x, -(HeaderRowHeight + 10f));
         _content = content;
@@ -303,7 +307,6 @@ public class MapDetailsPanel : MonoBehaviour
         closeTextRect.offsetMin = Vector2.zero;
         closeTextRect.offsetMax = Vector2.zero;
         closeBtn.onClick.AddListener(() => MapListPanel.Instance?.Close());
-        // Небольшая кнопка справки слева от крестика
         var (helpGo, helpButton, helpImage, helpText) = UIFactory.CreateButton(panel, "HelpButton", "?", 20);
         helpText.alignment = TextAnchor.MiddleCenter;
         var helpTextRect = (RectTransform)helpText.transform;
@@ -316,8 +319,30 @@ public class MapDetailsPanel : MonoBehaviour
         helpRect.anchorMax = new Vector2(1, 1);
         helpRect.pivot = new Vector2(1, 1);
         helpRect.sizeDelta = new Vector2(34, 34);
-        helpRect.anchoredPosition = new Vector2(-(CloseButtonReserve + 4f), -9f);
+        helpRect.anchoredPosition = new Vector2(-(CloseButtonReserve + HeaderButtonGap), -9f);
         helpButton.onClick.AddListener(() => HelpPopup.Show());
+
+        var (vpnGo, vpnButton, vpnImage, vpnText) = UIFactory.CreateButton(panel, "VpnButton", "VPN", 13);
+        vpnText.alignment = TextAnchor.MiddleCenter;
+        vpnImage.color = DarkButtonBg;
+        UIFactory.AddOutline(vpnGo);
+        var vpnRect = (RectTransform)vpnGo.transform;
+        vpnRect.anchorMin = new Vector2(1, 1);
+        vpnRect.anchorMax = new Vector2(1, 1);
+        vpnRect.pivot = new Vector2(1, 1);
+        float vpnWidth = UIFactory.MeasureButtonWidth(vpnText, min: 34f);
+        vpnRect.sizeDelta = new Vector2(vpnWidth, 34);
+        vpnRect.anchoredPosition = new Vector2(-(CloseButtonReserve + HeaderButtonGap + 34f + HeaderButtonGap), -9f);
+        vpnButton.onClick.AddListener(() => HelpPopup.ShowVpnGuide());
+        vpnGo.SetActive(IsDevMode);
+        _vpnButtonGo = vpnGo;
+    }
+
+    private void UpdateVpnButtonVisibility()
+    {
+        if (_vpnButtonGo == null) return;
+        bool visible = IsDevMode;
+        if (_vpnButtonGo.activeSelf != visible) _vpnButtonGo.SetActive(visible);
     }
 
     private void RefreshContent()
@@ -336,11 +361,15 @@ public class MapDetailsPanel : MonoBehaviour
         if (_currentMap == null)
         {
             AddText(Localization.Get("list.select_map"), 20, TextAnchor.MiddleLeft, Color.gray, 32);
+            AddSpacer(10);
+            AddIntegrationsOverview();
             return;
         }
 
         var map = _currentMap;
-        var title = AddWrappedText(map.Name, 26, map.CellColor);
+        var title = map.Catalog == MapCatalogKind.ArchitectServer
+            ? AddArchitectTitleRow(map)
+            : AddWrappedText(map.Name, 26, map.CellColor);
         title.fontStyle = FontStyle.Bold;
 
         string author = string.IsNullOrWhiteSpace(map.Creator)
@@ -348,49 +377,68 @@ public class MapDetailsPanel : MonoBehaviour
             : map.Creator;
         AddWrappedText($"{Localization.Get("panel.author")}: {author}", 18, Color.white);
 
-        var editorItems = (map.Editors ?? new List<MapEditor>())
-            .Select(e => (EditorConfig.GetLabel(e), (Color32)EditorConfig.GetColor(e)))
-            .ToList();
+        var editorItems = map.Catalog == MapCatalogKind.ArchitectServer
+            ? new List<(string, Color32)> { (ArchitectServerConfig.GetSourceLabel(map.ServerSource), ArchitectServerConfig.GetSourceColor(map.ServerSource)) }
+            : (map.Editors ?? new List<MapEditor>())
+                .Select(e => (EditorConfig.GetLabel(e), (Color32)EditorConfig.GetColor(e)))
+                .ToList();
         string editorsRich = editorItems.Count > 0
             ? BuildColoredList(editorItems)
             : $"<color=#AAAAAA>{Localization.Get("panel.not_specified")}</color>";
         AddWrappedText($"{Localization.Get("panel.editor")}: {editorsRich}", 18, Color.white);
 
-        var tagItems = (map.Tags ?? new List<MapTag>())
-            .Select(t => (TagConfig.GetLabel(t), (Color32)TagConfig.GetColor(t)))
-            .ToList();
-        string tagsRich = tagItems.Count > 0
-            ? BuildColoredList(tagItems)
-            : $"<color=#AAAAAA>{Localization.Get("panel.none")}</color>";
-        AddWrappedText($"{Localization.Get("panel.tags")}: {tagsRich}", 18, Color.white);
-
-        AddText($"{Localization.Get("panel.rating")}: {StarsToString(map.Stars)}", 18, TextAnchor.MiddleLeft, Color.white, 26);
-
-        if (map.Verified)
+        if (map.Catalog == MapCatalogKind.ArchitectServer)
         {
-            string verifierPart = string.IsNullOrWhiteSpace(map.VerifierName)
-                ? Localization.Get("panel.verified_by_unknown")
-                : map.VerifierName;
-            string datePart = map.VerificationDate.HasValue
-                ? $" ({map.VerificationDate.Value:dd.MM.yyyy})" : "";
-            AddWrappedText($"{Localization.Get("panel.verified")}: {verifierPart}{datePart}", 18, GoodGreen);
+            AddServerMapInfo(map);
+        }
+        else if (map.Catalog == MapCatalogKind.EventCommunity)
+        {
+            AddEventMapInfo(map);
+            AddMapIntegrationsSection(map);
         }
         else
         {
-            AddText(Localization.Get("panel.not_verified"), 18, TextAnchor.MiddleLeft, BadRed, 26);
+            var tagItems = (map.Tags ?? new List<MapTag>())
+                .Select(t => (TagConfig.GetLabel(t), (Color32)TagConfig.GetColor(t)))
+                .ToList();
+            string tagsRich = tagItems.Count > 0
+                ? BuildColoredList(tagItems)
+                : $"<color=#AAAAAA>{Localization.Get("panel.none")}</color>";
+            AddWrappedText($"{Localization.Get("panel.tags")}: {tagsRich}", 18, Color.white);
+
+            AddText($"{Localization.Get("panel.rating")}: {StarsToString(map.Stars)}", 18, TextAnchor.MiddleLeft, Color.white, 26);
+
+            if (map.Verified)
+            {
+                string verifierPart = string.IsNullOrWhiteSpace(map.VerifierName)
+                    ? Localization.Get("panel.verified_by_unknown")
+                    : map.VerifierName;
+                string datePart = map.VerificationDate.HasValue
+                    ? $" ({map.VerificationDate.Value:dd.MM.yyyy})" : "";
+                AddWrappedText($"{Localization.Get("panel.verified")}: {verifierPart}{datePart}", 18, GoodGreen);
+            }
+            else
+            {
+                AddText(Localization.Get("panel.not_verified"), 18, TextAnchor.MiddleLeft, BadRed, 26);
+            }
         }
         AddSpacer(10);
 
         AddEditorsSection(map);
 
-        bool filesAvailable = !string.IsNullOrEmpty(map.DriveUrl);
+        if (map.FileKind == MapFileKind.Save)
+        {
+            AddSaveMapSection(map);
+            return;
+        }
+
+        bool filesAvailable = map.FileKind != MapFileKind.None;
         string filesValue = filesAvailable
             ? Localization.Get("badge.files_available") + FormatKnownArchiveSize(map)
             : Localization.Get("badge.files_missing");
         AddBadge(Localization.Get("badge.files"), filesValue,
             filesAvailable ? PositiveBadgeColor : NegativeBadgeColor);
 
-        // Размер узнаём заранее по заголовкам ответа Drive, без скачивания
         if (filesAvailable)
             _ = EnsureArchiveSizeAsync(map);
 
@@ -400,7 +448,7 @@ public class MapDetailsPanel : MonoBehaviour
         bool canLaunch = manager != null && manager.CanLaunchMap(map);
         bool isLaunched = manager != null && manager.IsMapLaunched(map);
 
-        bool isDownloadingNow = _downloadInProgress ||
+        bool isDownloadingNow =
                                 _reinstallingMapKeys.Contains(map.Name) ||
                                 (manager != null && manager.IsMapDownloading(map));
 
@@ -439,12 +487,15 @@ public class MapDetailsPanel : MonoBehaviour
             downloadText.color = UIFactory.GetReadableTextColor(PrimaryActionBg);
             _contentGos.Add(row_downloadGo);
 
+            if (!isDownloaded && manager.TryGetLastDownloadError(map, out var lastError))
+                AddWrappedText(Localization.Get("download.last_error", lastError), 15, BadRed);
+
             AddUnloadButton(map);
             _downloadButton = downloadButton;
             _downloadButtonText = downloadText;
 
             bool interactable;
-            if (!isDownloaded) interactable = filesAvailable && !_downloadInProgress;
+            if (!isDownloaded) interactable = filesAvailable;
             else if (!canLaunch) interactable = false;
             else interactable = !isLaunched && !_launchInProgress;
 
@@ -488,55 +539,58 @@ public class MapDetailsPanel : MonoBehaviour
         }
         AddSpacer(10);
 
-        bool hasRequiredMods = map.RequiredPublicMods != null && map.RequiredPublicMods.Count > 0;
-        AddBadge(Localization.Get("badge.public_mods"),
-            hasRequiredMods ? Localization.Get("badge.yes") : Localization.Get("badge.no"),
-            hasRequiredMods ? PositiveBadgeColor : NeutralBadgeColor);
-
-        if (hasRequiredMods)
+        if (map.Catalog != MapCatalogKind.ArchitectServer)
         {
-            AddModRows(map.RequiredPublicMods
-                .Select(n => (Display: n, Folder: ModFolderManager.ResolveFolderName(n), ModLinksName: n)));
-            bool allPublicModsInstalled = map.RequiredPublicMods.All(RequiredModsChecker.IsModInstalled);
-            if (!allPublicModsInstalled)
+            bool hasRequiredMods = map.RequiredPublicMods != null && map.RequiredPublicMods.Count > 0;
+            AddBadge(Localization.Get("badge.public_mods"),
+                hasRequiredMods ? Localization.Get("badge.yes") : Localization.Get("badge.no"),
+                hasRequiredMods ? PositiveBadgeColor : NeutralBadgeColor);
+
+            if (hasRequiredMods)
             {
-                var (row_installPublicGo, installPublicGo, installPublicButton, installPublicImage, installPublicText) = UIFactory.CreateCompactButtonRow(
-                _content, "InstallPublicModsButton", Localization.Get("button.install_public_mods"), 20, 36f);
-                installPublicImage.color = ModsActionBg;
-                installPublicText.color = UIFactory.GetReadableTextColor(ModsActionBg);
-                _contentGos.Add(row_installPublicGo);
-                _installPublicModsButton = installPublicButton;
-                _installPublicModsButtonText = installPublicText;
-                installPublicButton.interactable = !_installPublicModsInProgress;
-                installPublicButton.onClick.AddListener(() => OnInstallPublicModsClicked(map));
+                AddModRows(map.RequiredPublicMods
+                    .Select(n => (Display: n, Folder: ModFolderManager.ResolveFolderName(n), ModLinksName: n)));
+                bool allPublicModsInstalled = map.RequiredPublicMods.All(RequiredModsChecker.IsModInstalled);
+                if (!allPublicModsInstalled)
+                {
+                    var (row_installPublicGo, installPublicGo, installPublicButton, installPublicImage, installPublicText) = UIFactory.CreateCompactButtonRow(
+                    _content, "InstallPublicModsButton", Localization.Get("button.install_public_mods"), 20, 36f);
+                    installPublicImage.color = ModsActionBg;
+                    installPublicText.color = UIFactory.GetReadableTextColor(ModsActionBg);
+                    _contentGos.Add(row_installPublicGo);
+                    _installPublicModsButton = installPublicButton;
+                    _installPublicModsButtonText = installPublicText;
+                    installPublicButton.interactable = !_installPublicModsInProgress;
+                    installPublicButton.onClick.AddListener(() => OnInstallPublicModsClicked(map));
+                }
             }
-        }
-        AddSpacer(10);
+            AddSpacer(10);
 
-        if (!isDownloaded)
-        {
-            AddBadge(Localization.Get("badge.additional_mods"),
-                Localization.Get("badge.additional_mods_after_download"), NeutralBadgeColor);
-        }
-        else
-        {
-            var dllNames = MapFileDistributor.ListDllFileNames(targetFolder);
-            bool hasDlls = dllNames.Count > 0;
-            AddBadge(Localization.Get("badge.additional_mods"),
-                hasDlls ? Localization.Get("badge.yes") : Localization.Get("badge.no"),
-                hasDlls ? PositiveBadgeColor : NeutralBadgeColor);
-            if (hasDlls)
+            if (!isDownloaded)
             {
-                AddModRows(dllNames
-                    .Select(n => (Display: n, Folder: Path.GetFileNameWithoutExtension(n), ModLinksName: (string)null)));
-                var (row_installGo, installGo, installButton, installImage, installText) = UIFactory.CreateCompactButtonRow(
-                _content, "InstallModsButton", Localization.Get("button.install_additional_mods"), 20, 36f);
-                installImage.color = ModsActionBg;
-                installText.color = UIFactory.GetReadableTextColor(ModsActionBg);
-                _contentGos.Add(row_installGo);
-                _installModsButton = installButton;
-                _installModsButtonText = installText;
-                installButton.onClick.AddListener(() => OnInstallModsClicked(map));
+                AddBadge(Localization.Get("badge.additional_mods"),
+                    Localization.Get("badge.additional_mods_after_download"), NeutralBadgeColor);
+            }
+            else
+            {
+                var dllNames = MapFileDistributor.ListDllFileNames(targetFolder);
+                bool hasDlls = dllNames.Count > 0;
+                AddBadge(Localization.Get("badge.additional_mods"),
+                    hasDlls ? Localization.Get("badge.yes") : Localization.Get("badge.no"),
+                    hasDlls ? PositiveBadgeColor : NeutralBadgeColor);
+                if (hasDlls)
+                {
+                    AddModRows(dllNames
+                        .Select(n => (Display: n, Folder: Path.GetFileNameWithoutExtension(n), ModLinksName: (string)null)));
+                    var (row_installGo, installGo, installButton, installImage, installText) = UIFactory.CreateCompactButtonRow(
+                    _content, "InstallModsButton", Localization.Get("button.install_additional_mods"), 20, 36f);
+                    installImage.color = ModsActionBg;
+                    installText.color = UIFactory.GetReadableTextColor(ModsActionBg);
+                    _contentGos.Add(row_installGo);
+                    _installModsButton = installButton;
+                    _installModsButtonText = installText;
+                    installButton.onClick.AddListener(() => OnInstallModsClicked(map));
+                }
             }
         }
 
@@ -570,6 +624,12 @@ public class MapDetailsPanel : MonoBehaviour
 
     private void OnOpenEditorFolderClicked(MapRow map)
     {
+        if (map?.Catalog == MapCatalogKind.ArchitectServer && map.ServerSource == ArchitectSource.Silksong)
+        {
+            ShowNotification(Localization.Get("error.editor_not_in_game"), isError: true);
+            return;
+        }
+
         if (map?.Editors == null || map.Editors.Count == 0)
         {
             ShowNotification(Localization.Get("error.no_editor"), isError: true);
@@ -631,11 +691,13 @@ public class MapDetailsPanel : MonoBehaviour
             ShowNotification(Localization.Get("error.offline_download"), isError: true);
             return;
         }
-        _downloadInProgress = true;
+        var downloadTask = manager.DownloadMapFilesTrackedAsync(map);
         RefreshContent();
-        var outcome = await manager.DownloadMapFilesTrackedAsync(map);
-        _downloadInProgress = false;
-        if (_currentMap?.Name != map.Name) return;
+        var outcome = await downloadTask;
+
+        if (!IsSameMap(_currentMap, map)) return;
+
+        if (!outcome.Success) manager.ClearLastDownloadError(map);
         RefreshContent();
         if (!outcome.Success)
         {
@@ -655,7 +717,12 @@ public class MapDetailsPanel : MonoBehaviour
                 : Localization.Get("txt.file_downloaded", fileList);
             ShowNotification(message, isError: false);
         }
+        ShowPresetDownloadResult(map);
     }
+
+    private static bool IsSameMap(MapRow a, MapRow b) =>
+        a != null && b != null && a.Catalog == b.Catalog &&
+        string.Equals(a.Name, b.Name, StringComparison.Ordinal);
 
     private void OnLaunchClicked(MapRow map)
     {
@@ -667,7 +734,7 @@ public class MapDetailsPanel : MonoBehaviour
         if (_downloadButtonText != null) _downloadButtonText.text = Localization.Get("button.launching");
         var outcome = manager.LaunchMap(map);
         _launchInProgress = false;
-        if (_currentMap?.Name != map.Name) return;
+        if (!IsSameMap(_currentMap, map)) return;
         if (!outcome.Success)
         {
             if (_downloadButton != null) _downloadButton.interactable = true;
@@ -675,12 +742,68 @@ public class MapDetailsPanel : MonoBehaviour
             ShowNotification(Localization.Get("error.generic", outcome.ErrorMessage), isError: true);
             return;
         }
+        var activatedPresets = PresetManager.ActivatePresets(map);
         RefreshContent();
-        if (outcome.MissingEditors.Count > 0)
+
+        foreach (var warning in GetEditorWarnings(map))
+            ShowNotification(warning, isError: true);
+
+        if (activatedPresets.Count > 0)
+            ShowNotification(Localization.Get("presets.activated", string.Join(", ", activatedPresets)), isError: false);
+
+        string mapFolder = manager.GetTargetFolder(map);
+        RefreshEditorsAfterChange(map, map.Editors, mapFolder,
+            SessionSceneTracker.GetDecorationMasterSceneNames(mapFolder));
+    }
+
+    private async void RefreshEditorsAfterChange(MapRow map, IEnumerable<MapEditor> editors, string mapFolder, List<string> sceneNames)
+    {
+        var set = new HashSet<MapEditor>(editors ?? Enumerable.Empty<MapEditor>());
+
+        if (set.Contains(MapEditor.DecorationMaster) && !DecorationMasterRuntimeBridge.Refresh(sceneNames))
+            Log.Warn("[Панель] Decoration Master не загружен или его устройство изменилось — кэш сцен не сброшен");
+
+        if (!set.Contains(MapEditor.NewArchitect)) return;
+
+        var result = await ArchitectRuntimeBridge.RefreshAsync(mapFolder);
+        if (result.NotLoaded) return;
+        if (map != null && !IsSameMap(_currentMap, map)) return;
+
+        if (!result.Success)
         {
-            string labels = string.Join(", ", outcome.MissingEditors.Select(EditorConfig.GetLabel));
-            ShowNotification(Localization.Get("error.editor_not_installed", labels), isError: true);
+            ShowNotification(Localization.Get("launch.architect_refresh_failed", result.ErrorMessage), isError: true);
+            return;
         }
+
+        if (result.AssetsDownloaded > 0)
+            ShowNotification(Localization.Get("launch.architect_assets_downloaded", result.AssetsDownloaded), isError: false);
+        if (result.AssetsFailed > 0)
+            ShowNotification(Localization.Get("launch.architect_assets_failed", result.AssetsFailed), isError: true);
+    }
+
+    private static List<string> GetEditorWarnings(MapRow map)
+    {
+        var warnings = new List<string>();
+        var changedSinceStart = RestartTracker.GetChanges();
+
+        foreach (var editor in (map.Editors ?? new List<MapEditor>()).Distinct())
+        {
+            var info = EditorModRegistry.Find(editor);
+            if (info == null) continue;
+
+            string label = EditorConfig.GetLabel(editor);
+            var state = PendingModChanges.GetEffectiveState(info.FolderName);
+
+            if (state == ModState.NotInstalled)
+                warnings.Add(Localization.Get("launch.editor_missing", label));
+            else if (state == ModState.Disabled)
+                warnings.Add(Localization.Get("launch.editor_disabled", label));
+            else if (changedSinceStart.Any(c => c.EnabledNow &&
+                         string.Equals(c.ModFolder, info.FolderName, StringComparison.OrdinalIgnoreCase)))
+                warnings.Add(Localization.Get("launch.editor_needs_restart", label));
+        }
+
+        return warnings;
     }
 
     private async void OnReinstallClicked(MapRow map)
@@ -710,7 +833,7 @@ public class MapDetailsPanel : MonoBehaviour
             }
         });
         _reinstallingMapKeys.Remove(key);
-        if (_currentMap?.Name != map.Name) return;
+        if (!IsSameMap(_currentMap, map)) return;
         if (!outcome.Success)
         {
             if (_reinstallButton != null) _reinstallButton.interactable = true;
@@ -732,10 +855,9 @@ public class MapDetailsPanel : MonoBehaviour
                 : Localization.Get("txt.file_reinstalled", fileList);
             ShowNotification(message, isError: false);
         }
+        ShowPresetDownloadResult(map);
     }
 
-    // Состояние редакторов, нужных этой карте: установлен/включён, версия и кнопка действия.
-    // Показываются только редакторы из EditorModRegistry (Custom Mod / Custom Engine мы не ставим).
     private void AddEditorsSection(MapRow map)
     {
         var editors = (map.Editors ?? new List<MapEditor>())
@@ -754,8 +876,6 @@ public class MapDetailsPanel : MonoBehaviour
         if (EditorModRegistry.ArchitectsConflict())
             AddWrappedText(Localization.Get("editors.architect_conflict"), 15, BadRed);
 
-        // Версии ещё не установленных редакторов берутся из ModLinks — подтягиваем
-        // кэш в фоне и перерисовываем панель, когда он появится.
         if (!PublicModInstaller.ManifestsLoaded)
             _ = EnsureManifestsAsync();
     }
@@ -843,14 +963,16 @@ public class MapDetailsPanel : MonoBehaviour
         });
     }
 
-    // Включение/выключение — перенос папки мода между Mods и Mods/Disabled,
-    // игра подхватывает такие изменения только при запуске.
-    private void OnEditorToggleClicked(MapEditor editor, bool enable)
+    private async void OnEditorToggleClicked(MapEditor editor, bool enable)
     {
         var info = EditorModRegistry.Find(editor);
+        if (enable && info != null)
+            await PublicModInstaller.EnableDependenciesAsync(info.ModLinksName);
         string error = info == null
             ? $"Редактор {editor} не поддерживает включение/выключение"
             : ModFolderManager.SetEnabledOrDefer(info.FolderName, enable, out _);
+
+        if (error == null && !enable) PresetManager.DeactivateForEditors(new[] { editor });
         RefreshContent();
 
         if (error != null)
@@ -889,8 +1011,6 @@ public class MapDetailsPanel : MonoBehaviour
             ShowNotification(Localization.Get("editors.install_failed", label, result.ErrorMessage), isError: true);
     }
 
-    // Строка одного мода: имя, состояние и кнопка действия (установить / включить / выключить).
-    // modLinksName задан только для публичных модов — их можно доустановить прямо отсюда.
     private void AddModRow(string displayName, string modFolderName, string modLinksName)
     {
         var state = PendingModChanges.GetEffectiveState(modFolderName);
@@ -918,7 +1038,6 @@ public class MapDetailsPanel : MonoBehaviour
         AddWrappedText($"  • {displayName}  —  <color=#{ColorUtility.ToHtmlStringRGB(stateColor)}>{stateText}</color>{pendingMark}",
                        15, Color.white);
 
-        // Неустановленные моды без имени в ModLinks ставятся общей кнопкой ниже
         if (state == ModState.NotInstalled && string.IsNullOrEmpty(modLinksName))
             return;
 
@@ -944,6 +1063,26 @@ public class MapDetailsPanel : MonoBehaviour
             else
                 OnModToggleClicked(displayName, modFolderName, capturedState == ModState.Disabled);
         });
+
+        AddMissingDependenciesRow(modLinksName, state);
+    }
+
+    private void AddMissingDependenciesRow(string modLinksName, ModState state)
+    {
+        if (string.IsNullOrEmpty(modLinksName) || state == ModState.NotInstalled) return;
+
+        var missing = PublicModInstaller.GetMissingDependencies(modLinksName);
+        if (missing.Count == 0) return;
+
+        AddWrappedText(Localization.Get("mods.missing_dependencies", string.Join(", ", missing)), 14, BadRed);
+
+        var (rowGo, btnGo, button, image, text) = UIFactory.CreateCompactButtonRow(
+            _content, $"DepsButton_{modLinksName}", Localization.Get("button.install_dependencies"), 14, 26f, 24f, 80f);
+        image.color = ModsActionBg;
+        text.color = UIFactory.GetReadableTextColor(ModsActionBg);
+        button.interactable = !_editorActionInProgress;
+        _contentGos.Add(rowGo);
+        button.onClick.AddListener(() => OnSingleModInstallClicked(modLinksName, text));
     }
 
     private void AddModRows(IEnumerable<(string Display, string Folder, string ModLinksName)> mods)
@@ -984,33 +1123,52 @@ public class MapDetailsPanel : MonoBehaviour
         _editorActionInProgress = true;
         if (buttonText != null) buttonText.text = Localization.Get("editors.installing");
 
-        var result = await PublicModInstaller.DownloadPublicModAsync(modLinksName);
+        bool alreadyInstalled = RequiredModsChecker.IsModInstalled(modLinksName);
+        var result = alreadyInstalled
+            ? await PublicModInstaller.InstallMissingDependenciesAsync(modLinksName)
+            : await PublicModInstaller.DownloadPublicModAsync(modLinksName);
 
         _editorActionInProgress = false;
         RefreshContent();
 
-        if (result.Success)
-            ShowRestartStateNotification(Localization.Get("editors.installed_restart", modLinksName));
-        else
+        if (!result.Success)
+        {
             ShowNotification(Localization.Get("editors.install_failed", modLinksName, result.ErrorMessage), isError: true);
+            return;
+        }
+
+        ShowRestartStateNotification(alreadyInstalled
+            ? Localization.Get("mods.dependencies_installed", string.Join(", ", result.InstalledDependencies))
+            : Localization.Get("editors.installed_restart", modLinksName));
+
+        if (!alreadyInstalled && result.InstalledDependencies.Count > 0)
+            ShowNotification(Localization.Get("mods.dependencies_installed", string.Join(", ", result.InstalledDependencies)), isError: false);
+
+        if (result.FailedDependencies.Count > 0)
+            ShowNotification(Localization.Get("mods.dependencies_failed", string.Join(", ", result.FailedDependencies)), isError: true);
     }
 
     private void ShowRestartStateNotification(string changeMessage)
     {
-        if (RestartTracker.IsRestartNeeded())
+        if (IsRestartNeeded())
             ShowNotification(changeMessage, isError: false);
         else
             ShowNotification(Localization.Get("restart.not_needed"), isError: false);
     }
 
-    // Кнопка перезапуска: только когда состояние модов реально разошлось с исходным.
-    // Срабатывает по удержанию, чтобы её нельзя было нажать случайно.
+    private static bool IsRestartNeeded() =>
+        RestartTracker.IsRestartNeeded() || SessionSceneTracker.RestartRequested;
+
     private void AddRestartSection()
     {
-        if (!RestartTracker.IsRestartNeeded()) return;
+        if (!IsRestartNeeded()) return;
 
         AddSpacer(14);
-        AddWrappedText(Localization.Get("restart.needed", RestartTracker.DescribeChanges()), 15, TxtNoticeYellow);
+        var reasons = new List<string>();
+        string modChanges = RestartTracker.DescribeChanges();
+        if (!string.IsNullOrEmpty(modChanges)) reasons.Add(modChanges);
+        if (SessionSceneTracker.RestartRequested) reasons.Add(SessionSceneTracker.DescribeRestartReasons());
+        AddWrappedText(Localization.Get("restart.needed", string.Join("; ", reasons)), 15, TxtNoticeYellow);
 
         string idle = Localization.Get("restart.button_idle");
         string holding = Localization.Get("restart.button_holding");
@@ -1021,7 +1179,6 @@ public class MapDetailsPanel : MonoBehaviour
         text.alignment = TextAnchor.MiddleCenter;
         text.color = UIFactory.GetReadableTextColor(RestartButtonBg);
 
-        // Полоска заполнения — под текстом, поэтому добавляется первым потомком
         var fillGo = new GameObject("Fill", typeof(RectTransform), typeof(Image));
         fillGo.transform.SetParent(go.transform, false);
         fillGo.transform.SetAsFirstSibling();
@@ -1034,7 +1191,6 @@ public class MapDetailsPanel : MonoBehaviour
         fillImage.color = RestartButtonFill;
         fillImage.raycastTarget = false;
 
-        // Ширину фиксируем по самой длинной подписи, иначе кнопка "прыгает" при нажатии
         UIFactory.FitButtonWidthForLabels(go, text, 120f, idle, holding);
 
         var hold = go.AddComponent<HoldToConfirmButton>();
@@ -1052,14 +1208,14 @@ public class MapDetailsPanel : MonoBehaviour
         _contentGos.Add(row_go);
     }
 
-    // Звёздочка избранного и ссылка на строку карты в самой таблице
-    // Шапка живёт вне прокручиваемого содержимого, поэтому обновляется отдельно
     private void UpdateHeaderButtons()
     {
         bool hasMap = _currentMap != null;
 
         if (_favoriteButton != null) _favoriteButton.interactable = hasMap;
-        if (_openSheetButton != null) _openSheetButton.interactable = hasMap;
+        bool architect = hasMap && _currentMap.Catalog == MapCatalogKind.ArchitectServer;
+        if (_openSheetGo != null) _openSheetGo.SetActive(!architect);
+        if (_openSheetButton != null) _openSheetButton.interactable = hasMap && !architect;
         if (_favoriteText == null || _favoriteImage == null) return;
 
         bool favorite = hasMap && FavoritesStore.IsFavorite(_currentMap);
@@ -1080,7 +1236,9 @@ public class MapDetailsPanel : MonoBehaviour
     {
         if (_currentMap == null) return;
 
-        SystemUtils.OpenUrl(SheetConfig.GetRowUrl(_currentMap.SheetRowNumber));
+        SystemUtils.OpenUrl(_currentMap.Catalog == MapCatalogKind.EventCommunity
+            ? EventCatalogConfig.GetRowUrl(_currentMap.SheetRowNumber)
+            : SheetConfig.GetRowUrl(_currentMap.SheetRowNumber));
     }
 
     private string FormatKnownArchiveSize(MapRow map)
@@ -1103,11 +1261,10 @@ public class MapDetailsPanel : MonoBehaviour
         if (!_sizeRequested.Add(map.Name)) return;
 
         bool ok = await manager.FetchArchiveSizeAsync(map);
-        if (ok && _currentMap == map)
+        if (ok && IsSameMap(_currentMap, map))
             RefreshContent();
     }
 
-    // Выключение карты: активные файлы редактора уезжают в бекап, редактор пустеет
     private void AddUnloadButton(MapRow map)
     {
         var editors = map?.Editors;
@@ -1129,14 +1286,724 @@ public class MapDetailsPanel : MonoBehaviour
         if (manager == null) return;
 
         string error = manager.UnloadMap(map);
+
+        if (error == null || error == "NOTHING")
+        {
+            PresetManager.DeactivatePresets(map);
+            PresetManager.DeactivateForEditors(map.Editors);
+        }
         RefreshContent();
 
         if (error == null)
+        {
             ShowNotification(Localization.Get("unload.done"), isError: false);
+            RefreshEditorsAfterChange(map, map.Editors, null, null);
+        }
         else if (error == "NOTHING")
             ShowNotification(Localization.Get("unload.nothing"), isError: false);
         else
             ShowNotification(Localization.Get("unload.failed", error), isError: true);
+    }
+
+    private static readonly System.Net.Http.HttpClient PreviewHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    private void AddServerMapInfo(MapRow map)
+    {
+        if (!string.IsNullOrWhiteSpace(map.Description))
+        {
+            AddSpacer(4);
+            AddWrappedText(map.Description, 16, new Color(0.86f, 0.87f, 0.90f));
+        }
+
+        AddSpacer(6);
+        if (map.HasServerMetadata)
+        {
+            AddWrappedText($"{Localization.Get("server.difficulty")}: {DifficultyText(map.Difficulty)}   ·   " +
+                           $"{Localization.Get("server.duration")}: {DurationText(map.Duration)}", 16, Color.white);
+
+            if (map.ServerTags.Count > 0)
+                AddWrappedText($"{Localization.Get("panel.tags")}: " +
+                               string.Join(", ", map.ServerTags.Select(t => Tinted(t.ToString(), ArchitectServerConfig.GetTagColor(t)))),
+                               16, Color.white);
+
+            AddServerStatsRow(map);
+        }
+        else
+        {
+            AddServerStatsRow(map);
+        }
+
+        if (map.Uploaded.HasValue)
+        {
+            string dates = $"{Localization.Get("server.uploaded")}: {map.Uploaded.Value.ToLocalTime():dd.MM.yyyy}";
+            if (map.Updated.HasValue && map.Updated.Value.Date != map.Uploaded.Value.Date)
+                dates += $"   ·   {Localization.Get("server.updated")}: {map.Updated.Value.ToLocalTime():dd.MM.yyyy}";
+            AddWrappedText(dates, 15, MutedGray);
+        }
+
+        if (map.ServerSource == ArchitectSource.Silksong)
+        {
+            AddSpacer(4);
+            AddWrappedText(Localization.Get("server.silksong_download_only"), 15, TxtNoticeYellow);
+        }
+
+        AddMarksRow(map);
+        AddServerSaveButton(map);
+    }
+
+    private void AddServerStatsRow(MapRow map)
+    {
+        string downloads = $"{Localization.Get("server.downloads")}: {map.Downloads}";
+        string stats = map.HasServerMetadata
+            ? $"{downloads}   ·   {Localization.Get("server.likes")}: {map.Likes}"
+            : downloads;
+        AddWrappedText(stats, 16, Color.white);
+    }
+
+    private static string DifficultyText(ServerDifficulty d) =>
+        d == ServerDifficulty.None
+            ? Localization.Get("server.not_set")
+            : Tinted(ArchitectServerConfig.GetDifficultyLabel(d), ArchitectServerConfig.GetDifficultyColor(d));
+
+    private static string DurationText(ServerDuration d) =>
+        d == ServerDuration.None
+            ? Localization.Get("server.not_set")
+            : Tinted(ArchitectServerConfig.GetDurationLabel(d), ArchitectServerConfig.GetDurationColor(d));
+
+    private static string Tinted(string text, Color32 color) =>
+        $"<color=#{ColorUtility.ToHtmlStringRGB(color)}>{text}</color>";
+
+    private void AddMarksRow(MapRow map)
+    {
+        AddSpacer(6);
+        var row = new GameObject("MarksRow", typeof(RectTransform));
+        row.transform.SetParent(_content, false);
+        SetRowHeight(row, 30);
+        _contentGos.Add(row);
+
+        string seenOn = "● " + Localization.Get("marks.seen");
+        string seenOff = "● " + Localization.Get("marks.not_seen");
+        var seenColor = new Color(0.22f, 0.40f, 0.52f, 1f);
+        var likedColor = new Color(0.22f, 0.45f, 0.27f, 1f);
+        var dislikedColor = new Color(0.50f, 0.22f, 0.24f, 1f);
+
+        float seenWidth;
+        {
+            var (measureGo, _, _, measureText) = UIFactory.CreateButton(row.transform, "MarkMeasure", seenOn, 15);
+            float onWidth = UIFactory.MeasureButtonWidth(measureText, min: 60f);
+            measureText.text = seenOff;
+            seenWidth = Mathf.Max(onWidth, UIFactory.MeasureButtonWidth(measureText, min: 60f));
+            Destroy(measureGo);
+        }
+
+        float x = 0f;
+        (Button button, Image image, Text text) Place(string name, string label, float width)
+        {
+            var (go, button, image, text) = UIFactory.CreateButton(row.transform, name, label, 15);
+            text.alignment = TextAnchor.MiddleCenter;
+            text.horizontalOverflow = HorizontalWrapMode.Overflow;
+            UIFactory.AddOutline(go);
+            var rect = (RectTransform)go.transform;
+            rect.anchorMin = new Vector2(0, 0);
+            rect.anchorMax = new Vector2(0, 1);
+            rect.pivot = new Vector2(0, 0.5f);
+            if (width <= 0f) width = UIFactory.MeasureButtonWidth(text, min: 60f);
+            rect.sizeDelta = new Vector2(width, 0);
+            rect.anchoredPosition = new Vector2(x, 0);
+            x += width + 6f;
+            return (button, image, text);
+        }
+
+        var (seenButton, seenImage, seenText) = Place("Mark_Seen", seenOn, seenWidth);
+        var (likedButton, likedImage, likedText) = Place("Mark_Liked", "▲", 0f);
+        var (dislikedButton, dislikedImage, dislikedText) = Place("Mark_Disliked", "▼", 0f);
+
+        void Paint(Image image, Text text, bool on, Color onColor)
+        {
+            image.color = on ? onColor : DarkButtonBg;
+            text.color = UIFactory.GetReadableTextColor(image.color);
+        }
+
+        void Refresh()
+        {
+            bool seen = MapMarksStore.IsSeen(map);
+            var reaction = MapMarksStore.GetReaction(map);
+            seenText.text = seen ? seenOn : seenOff;
+            Paint(seenImage, seenText, seen, seenColor);
+            Paint(likedImage, likedText, reaction == MapReaction.Liked, likedColor);
+            Paint(dislikedImage, dislikedText, reaction == MapReaction.Disliked, dislikedColor);
+        }
+
+        seenButton.onClick.AddListener(() => { MapMarksStore.SetSeen(map, !MapMarksStore.IsSeen(map)); Refresh(); });
+        likedButton.onClick.AddListener(() => { MapMarksStore.ToggleReaction(map, MapReaction.Liked); Refresh(); });
+        dislikedButton.onClick.AddListener(() => { MapMarksStore.ToggleReaction(map, MapReaction.Disliked); Refresh(); });
+        Refresh();
+    }
+
+    private bool _serverSaveInProgress;
+
+    private void AddServerSaveButton(MapRow map)
+    {
+        if (!map.HasSave || map.ServerSource == ArchitectSource.Silksong) return;
+
+        AddSpacer(6);
+        var (row, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+            _content, "ServerSaveButton",
+            Localization.Get(_serverSaveInProgress ? "save.installing" : "server.install_save"), 16, 32f);
+        image.color = ModsActionBg;
+        text.color = UIFactory.GetReadableTextColor(ModsActionBg);
+        button.interactable = !_serverSaveInProgress;
+        _contentGos.Add(row);
+        button.onClick.AddListener(() => OnServerSaveClicked(map));
+    }
+
+    private async void OnServerSaveClicked(MapRow map)
+    {
+        if (_serverSaveInProgress) return;
+        _serverSaveInProgress = true;
+        RefreshContent();
+
+        SaveInstallResult result;
+        try
+        {
+            var bytes = await Server.ArchitectServerClient.DownloadSaveAsync(map);
+            result = SaveInstaller.InstallBytes(map.Name, bytes);
+        }
+        catch (Exception e)
+        {
+            result = new SaveInstallResult { ErrorMessage = e.Message };
+        }
+
+        _serverSaveInProgress = false;
+        if (!IsSameMap(_currentMap, map)) return;
+        RefreshContent();
+
+        if (!result.Success)
+        {
+            ShowNotification(Localization.Get("save.failed", result.ErrorMessage), isError: true);
+            return;
+        }
+
+        ShowNotification(Localization.Get("save.installed", result.Slot, result.SavePath), isError: false);
+        if (result.NeedsMoreSaves && !SaveInstaller.IsMoreSavesInstalled())
+            ShowNotification(Localization.Get("save.slot_needs_more_saves", result.Slot), isError: true);
+    }
+
+    private const string TeleportMasterModName = "Teleport Master";
+
+    private static readonly Dictionary<string, Texture2D> PreviewCache = new();
+    private static CancellationTokenSource _previewCts;
+    private static string _previewCtsUrl;
+    private GameObject _previewPlaceholder;
+    private string _previewPlaceholderUrl;
+    private bool _saveInstallInProgress;
+    private ScrollRect _detailsScroll;
+
+    private void AddEventMapInfo(MapRow map)
+    {
+        string typeColor = ColorUtility.ToHtmlStringRGB(EventCatalogConfig.GetTypeColor(map.EventType));
+        AddWrappedText($"{Localization.Get("panel.type")}: <color=#{typeColor}>{EventCatalogConfig.GetTypeLabel(map.EventType)}</color>",
+            18, Color.white);
+
+        if (!string.IsNullOrWhiteSpace(map.Description))
+        {
+            AddSpacer(4);
+            AddWrappedText(map.Description, 16, new Color(0.86f, 0.87f, 0.90f));
+        }
+
+        if (!string.IsNullOrEmpty(map.RulesUrl))
+        {
+            AddSpacer(4);
+            var (rulesRow, rulesGo, rulesButton, rulesImage, rulesText) = UIFactory.CreateCompactButtonRow(
+                _content, "RulesButton", Localization.Get("button.open_rules"), 16, 32f);
+            rulesImage.color = DarkButtonBg;
+            rulesText.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+            _contentGos.Add(rulesRow);
+            string url = map.RulesUrl;
+            rulesButton.onClick.AddListener(() => SystemUtils.OpenUrl(url));
+        }
+
+        AddPreviewImage(map);
+    }
+
+    private void AddPreviewImage(MapRow map)
+    {
+        if (string.IsNullOrEmpty(map.PreviewUrl)) return;
+
+        AddSpacer(8);
+
+        if (!PreviewCache.TryGetValue(map.PreviewUrl, out var texture) || texture == null)
+        {
+            var placeholder = AddText(Localization.Get("panel.preview_loading"), 15, TextAnchor.MiddleLeft, MutedGray, 24);
+            _previewPlaceholder = placeholder.gameObject;
+            _previewPlaceholderUrl = map.PreviewUrl;
+            _ = LoadPreviewAsync(map);
+            return;
+        }
+
+        _contentGos.Add(CreatePreviewGo(texture));
+    }
+
+    private GameObject CreatePreviewGo(Texture2D texture)
+    {
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_content);
+        var layout = _content.GetComponent<VerticalLayoutGroup>();
+        float padding = layout != null ? layout.padding.left + layout.padding.right : 0f;
+        float width = Mathf.Max(_content.rect.width - padding, 1f);
+        float height = width * texture.height / Mathf.Max(1f, texture.width);
+
+        var go = new GameObject("Preview", typeof(RectTransform), typeof(RawImage));
+        go.transform.SetParent(_content, false);
+        go.GetComponent<RawImage>().texture = texture;
+        SetRowHeight(go, height);
+        return go;
+    }
+
+    private void ShowPreview(string url, Texture2D texture)
+    {
+        if (_avatarUrl == url && _avatarImage != null)
+        {
+            if (_avatarGo != null) _avatarGo.SetActive(true);
+            ShowAvatarTexture(texture);
+            if (_avatarProgressGo != null) _avatarProgressGo.SetActive(false);
+            return;
+        }
+
+        if (_previewPlaceholder == null || _previewPlaceholderUrl != url) return;
+
+        var placeholder = _previewPlaceholder;
+        _previewPlaceholder = null;
+        int index = placeholder.transform.GetSiblingIndex();
+        var go = CreatePreviewGo(texture);
+        go.transform.SetSiblingIndex(index);
+
+        int listIndex = _contentGos.IndexOf(placeholder);
+        if (listIndex >= 0) _contentGos[listIndex] = go;
+        else _contentGos.Add(go);
+        Destroy(placeholder);
+    }
+
+    private async Task LoadPreviewAsync(MapRow map)
+    {
+        string url = map.PreviewUrl;
+        if (FailedPreviewUrls.Contains(url))
+        {
+            HideAvatar(url);
+            return;
+        }
+        if (_previewCtsUrl == url) return;
+
+        _previewCts?.Cancel();
+        var cts = new CancellationTokenSource(PreviewTimeout);
+        _previewCts = cts;
+        _previewCtsUrl = url;
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            byte[] bytes = url.IndexOf("drive.google.com", StringComparison.OrdinalIgnoreCase) >= 0
+                ? await Drive.GoogleDriveDownloader.DownloadAsync(url,
+                    onProgress: (received, total) => ReportAvatarProgress(url, received, total),
+                    cancellationToken: cts.Token)
+                : await ReadPreviewBytesAsync(url, cts.Token,
+                    (received, total) => ReportAvatarProgress(url, received, total));
+            cts.Token.ThrowIfCancellationRequested();
+            if (bytes == null || bytes.Length == 0)
+            {
+                FailedPreviewUrls.Add(url);
+                Log.Warn($"[Превью] '{map.Name}': пустой ответ за {clock.ElapsedMilliseconds} мс, {url}");
+                HideAvatar(url);
+                return;
+            }
+
+            var texture = new Texture2D(2, 2);
+            if (!texture.LoadImage(bytes))
+            {
+                Log.Warn($"Превью карты '{map.Name}' не удалось прочитать как картинку");
+                FailedPreviewUrls.Add(url);
+                HideAvatar(url);
+                return;
+            }
+
+            PreviewCache[url] = texture;
+            if (IsSameMap(_currentMap, map)) ShowPreview(url, texture);
+        }
+        catch (OperationCanceledException)
+        {
+            if (_previewCts == cts)
+            {
+                Log.Warn($"[Превью] '{map.Name}': не загрузилась за {PreviewTimeout.TotalSeconds:F0} с, {url}");
+                HideAvatar(url);
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[Превью] '{map.Name}': ошибка за {clock.ElapsedMilliseconds} мс, {url}: {e.Message}");
+            HideAvatar(url);
+        }
+        finally
+        {
+            if (_previewCts == cts)
+            {
+                _previewCts = null;
+                _previewCtsUrl = null;
+            }
+        }
+    }
+
+    private static async Task<byte[]> ReadPreviewBytesAsync(string url, CancellationToken token, Action<long, long?> onProgress)
+    {
+        using var response = await PreviewHttp.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, token);
+        if (!response.IsSuccessStatusCode)
+        {
+            FailedPreviewUrls.Add(url);
+            response.EnsureSuccessStatusCode();
+        }
+        long? total = response.Content.Headers.ContentLength;
+        using var stream = await response.Content.ReadAsStreamAsync();
+        using var memory = new MemoryStream();
+        var buffer = new byte[16384];
+        long received = 0;
+        int read;
+        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+        {
+            await memory.WriteAsync(buffer, 0, read, token);
+            received += read;
+            onProgress?.Invoke(received, total);
+        }
+        return memory.ToArray();
+    }
+
+    private const float AvatarHeight = 108f * 0.9f;
+    private const float AvatarMaxWidth = AvatarHeight * 1.8f;
+    private const float AvatarMinWidth = AvatarHeight * 0.75f;
+    private const float AvatarTopOffset = 6f;
+    private const float AvatarProgressHeight = 18f;
+    private static readonly TimeSpan PreviewTimeout = TimeSpan.FromSeconds(20);
+    private static readonly HashSet<string> FailedPreviewUrls = new();
+    private RawImage _avatarImage;
+    private GameObject _avatarGo;
+    private RectTransform _avatarRect;
+    private RectTransform _avatarTitleRect;
+    private GameObject _avatarProgressGo;
+    private RectTransform _avatarProgressRect;
+    private Image _avatarProgressFill;
+    private Text _avatarProgressText;
+    private string _avatarUrl;
+
+    private Text AddArchitectTitleRow(MapRow map)
+    {
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_content);
+        var layout = _content.GetComponent<VerticalLayoutGroup>();
+        float padding = layout != null ? layout.padding.left + layout.padding.right : 0f;
+        bool hasAvatar = !string.IsNullOrEmpty(map.PreviewUrl);
+        float reserved = hasAvatar ? AvatarMaxWidth + 10f : 0f;
+        float textWidth = Mathf.Max(_content.rect.width - padding - reserved, 1f);
+
+        var row = new GameObject("TitleRow", typeof(RectTransform));
+        row.transform.SetParent(_content, false);
+        _contentGos.Add(row);
+
+        var title = UIFactory.CreateText(row.transform, "Title", map.Name, 26, TextAnchor.UpperLeft);
+        title.color = map.CellColor;
+        title.fontStyle = FontStyle.Bold;
+        title.horizontalOverflow = HorizontalWrapMode.Wrap;
+        title.verticalOverflow = VerticalWrapMode.Overflow;
+        var titleRect = (RectTransform)title.transform;
+        var settings = title.GetGenerationSettings(new Vector2(textWidth, 0f));
+        settings.generateOutOfBounds = true;
+        float titleHeight = new TextGenerator().GetPreferredHeight(map.Name, settings);
+        titleRect.anchorMin = new Vector2(0, 1);
+        titleRect.anchorMax = new Vector2(1, 1);
+        titleRect.pivot = new Vector2(0, 1);
+        titleRect.offsetMin = new Vector2(0, -titleHeight);
+        titleRect.offsetMax = new Vector2(-reserved, 0);
+
+        var avatarGo = new GameObject("Avatar", typeof(RectTransform), typeof(RawImage));
+        avatarGo.transform.SetParent(row.transform, false);
+        var avatar = avatarGo.GetComponent<RawImage>();
+        avatar.color = DarkButtonBg;
+        var avatarRect = (RectTransform)avatarGo.transform;
+        avatarRect.anchorMin = new Vector2(1, 1);
+        avatarRect.anchorMax = new Vector2(1, 1);
+        avatarRect.pivot = new Vector2(1, 1);
+        avatarRect.sizeDelta = new Vector2(AvatarHeight, AvatarHeight);
+        avatarRect.anchoredPosition = new Vector2(0, -AvatarTopOffset);
+
+        var (progressGo, fill, progressText) = UIFactory.CreateProgressBar(row.transform, "AvatarProgress");
+        var progressRect = (RectTransform)progressGo.transform;
+        progressRect.anchorMin = new Vector2(1, 1);
+        progressRect.anchorMax = new Vector2(1, 1);
+        progressRect.pivot = new Vector2(1, 1);
+        progressRect.sizeDelta = new Vector2(AvatarHeight, AvatarProgressHeight);
+        progressRect.anchoredPosition = new Vector2(0, -(AvatarTopOffset + AvatarHeight - AvatarProgressHeight));
+        progressText.fontSize = 10;
+        progressText.text = "";
+
+        SetRowHeight(row, titleHeight + 4f);
+
+        _avatarGo = avatarGo;
+        _avatarRect = avatarRect;
+        _avatarTitleRect = titleRect;
+        _avatarImage = avatar;
+        _avatarProgressGo = progressGo;
+        _avatarProgressRect = progressRect;
+        _avatarProgressFill = fill;
+        _avatarProgressText = progressText;
+        _avatarUrl = map.PreviewUrl;
+
+        if (!hasAvatar || FailedPreviewUrls.Contains(map.PreviewUrl))
+        {
+            avatarGo.SetActive(false);
+            progressGo.SetActive(false);
+        }
+        else if (PreviewCache.TryGetValue(map.PreviewUrl, out var cached) && cached != null)
+        {
+            ShowAvatarTexture(cached);
+            progressGo.SetActive(false);
+        }
+        else
+        {
+            _ = LoadPreviewAsync(map);
+        }
+
+        return title;
+    }
+
+    private void HideAvatar(string url)
+    {
+        if (_avatarUrl != url || _avatarGo == null) return;
+        _avatarGo.SetActive(false);
+        if (_avatarProgressGo != null) _avatarProgressGo.SetActive(false);
+    }
+
+    private void ShowAvatarTexture(Texture2D texture)
+    {
+        if (_avatarImage == null || _avatarRect == null) return;
+
+        float aspect = (float)texture.width / Mathf.Max(1, texture.height);
+        float width = Mathf.Clamp(AvatarHeight * aspect, AvatarMinWidth, AvatarMaxWidth);
+
+        _avatarImage.texture = texture;
+        _avatarImage.color = Color.white;
+        _avatarImage.uvRect = new Rect(0f, 0f, 1f, 1f);
+        _avatarRect.sizeDelta = new Vector2(width, AvatarHeight);
+        if (_avatarProgressRect != null) _avatarProgressRect.sizeDelta = new Vector2(width, AvatarProgressHeight);
+        if (_avatarTitleRect != null) _avatarTitleRect.offsetMax = new Vector2(-(width + 10f), 0);
+        _avatarGo.SetActive(true);
+    }
+
+    private void ReportAvatarProgress(string url, long received, long? total)
+    {
+        if (_avatarUrl != url || _avatarProgressGo == null) return;
+
+        _avatarProgressGo.SetActive(true);
+        bool known = total.HasValue && total.Value > 0;
+        float fraction = known ? Mathf.Clamp01((float)received / total.Value) : 0.5f;
+        if (_avatarProgressFill != null)
+            ((RectTransform)_avatarProgressFill.transform).anchorMax = new Vector2(fraction, 1);
+        if (_avatarProgressText != null)
+            _avatarProgressText.text = known ? $"{fraction * 100f:F0}%" : FormatBytes(received);
+    }
+
+    private void AddSaveMapSection(MapRow map)
+    {
+        AddBadge(Localization.Get("badge.save"), Localization.Get("badge.save_hint"), PositiveBadgeColor);
+
+        var (saveRow, saveGo, saveButton, saveImage, saveText) = UIFactory.CreateCompactButtonRow(
+            _content, "InstallSaveButton",
+            _saveInstallInProgress ? Localization.Get("save.installing") : Localization.Get("button.install_save"),
+            18, 38f);
+        saveImage.color = PrimaryActionBg;
+        saveText.color = UIFactory.GetReadableTextColor(PrimaryActionBg);
+        saveButton.interactable = !_saveInstallInProgress;
+        _contentGos.Add(saveRow);
+        saveButton.onClick.AddListener(() => OnInstallSaveClicked(map));
+
+        if (SaveInstaller.FindHighestSlot() > SaveInstaller.VanillaSlotCount &&
+            (!SaveInstaller.IsMoreSavesInstalled() ||
+             PublicModInstaller.GetMissingDependencies(SaveInstaller.MoreSavesModName).Count > 0))
+        {
+            AddSpacer(4);
+            AddWrappedText(Localization.Get("save.more_saves_needed"), 15, TxtNoticeYellow);
+            AddRecommendedModButton("InstallMoreSavesButton", SaveInstaller.MoreSavesModName);
+        }
+
+        if (!RequiredModsChecker.IsModInstalled(TeleportMasterModName) ||
+            PublicModInstaller.GetMissingDependencies(TeleportMasterModName).Count > 0)
+        {
+            AddSpacer(4);
+            AddWrappedText(Localization.Get("save.teleport_master_hint"), 15, MutedGray);
+            AddRecommendedModButton("InstallTeleportMasterButton", TeleportMasterModName);
+        }
+
+        bool hasRequiredMods = map.RequiredPublicMods != null && map.RequiredPublicMods.Count > 0;
+        if (hasRequiredMods)
+        {
+            AddSpacer(10);
+            AddBadge(Localization.Get("badge.public_mods"), Localization.Get("badge.yes"), PositiveBadgeColor);
+            AddModRows(map.RequiredPublicMods
+                .Select(n => (Display: n, Folder: ModFolderManager.ResolveFolderName(n), ModLinksName: n)));
+        }
+
+        AddRestartSection();
+    }
+
+    private void AddRecommendedModButton(string name, string modName)
+    {
+        var (row, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+            _content, name, Localization.Get("button.install_mod", modName), 15, 30f);
+        image.color = ModsActionBg;
+        text.color = UIFactory.GetReadableTextColor(ModsActionBg);
+        button.interactable = !_editorActionInProgress;
+        _contentGos.Add(row);
+        button.onClick.AddListener(() => OnSingleModInstallClicked(modName, text));
+    }
+
+    private async void OnInstallSaveClicked(MapRow map)
+    {
+        if (_saveInstallInProgress) return;
+
+        _saveInstallInProgress = true;
+        RefreshContent();
+
+        var result = await SaveInstaller.InstallAsync(map);
+
+        _saveInstallInProgress = false;
+        if (!IsSameMap(_currentMap, map)) return;
+
+        RefreshContent();
+
+        if (!result.Success)
+        {
+            ShowNotification(Localization.Get("save.failed", result.ErrorMessage), isError: true);
+            return;
+        }
+
+        ShowNotification(Localization.Get("save.installed", result.Slot, result.SavePath), isError: false);
+
+        if (map.Presets != null && map.Presets.Count > 0)
+        {
+            var presets = await PresetManager.DownloadPresetsAsync(map);
+            if (!IsSameMap(_currentMap, map)) return;
+            var activated = PresetManager.ActivatePresets(map);
+            RefreshContent();
+            if (presets.Failed.Count > 0)
+                ShowNotification(Localization.Get("presets.download_failed", string.Join(", ", presets.Failed)), isError: true);
+            if (activated.Count > 0)
+                ShowNotification(Localization.Get("presets.activated", string.Join(", ", activated)), isError: false);
+        }
+
+        if (result.NeedsMoreSaves && !SaveInstaller.IsMoreSavesInstalled())
+            ShowNotification(Localization.Get("save.slot_needs_more_saves", result.Slot), isError: true);
+    }
+
+    private static string AvailabilityText(IModIntegration integration)
+    {
+        return integration.GetAvailability() switch
+        {
+            IntegrationAvailability.Loaded => $"<color=#9BE89B>{Localization.Get("integrations.loaded")}</color>",
+            IntegrationAvailability.Installed => $"<color=#E8D27A>{Localization.Get("integrations.installed_not_loaded")}</color>",
+            _ => $"<color=#E89B9B>{Localization.Get("integrations.not_installed")}</color>"
+        };
+    }
+
+    private void AddIntegrationsOverview()
+    {
+        AddBadge(Localization.Get("integrations.title"), "", NeutralBadgeColor);
+        foreach (var integration in IntegrationRegistry.All)
+            AddWrappedText($"  • {integration.DisplayName}  —  {AvailabilityText(integration)}", 15, Color.white);
+    }
+
+    private void AddMapIntegrationsSection(MapRow map)
+    {
+        if (map.Presets == null || map.Presets.Count == 0) return;
+
+        AddSpacer(10);
+        AddBadge(Localization.Get("integrations.title"), "", NeutralBadgeColor);
+
+        foreach (var preset in map.Presets)
+        {
+            var integration = IntegrationRegistry.Find(preset.IntegrationId);
+            if (integration == null) continue;
+
+            var state = PresetManager.GetState(map, integration);
+            string stateText = state switch
+            {
+                PresetState.Active => $"<color=#9BE89B>{Localization.Get("presets.state.active")}</color>",
+                PresetState.Downloaded => $"<color=#E8D27A>{Localization.Get("presets.state.inactive")}</color>",
+                _ => $"<color=#AAAAAA>{Localization.Get("presets.state.not_downloaded")}</color>"
+            };
+
+            AddWrappedText($"  • {integration.DisplayName}: {Localization.Get("presets.preset")} {stateText}  ·  " +
+                           $"{Localization.Get("integrations.mod")} {AvailabilityText(integration)}", 15, Color.white);
+
+            string buttonKey = state switch
+            {
+                PresetState.Active => "presets.button.disable",
+                PresetState.Downloaded => "presets.button.enable",
+                _ => "presets.button.download"
+            };
+
+            var (row, go, button, image, text) = UIFactory.CreateCompactButtonRow(
+                _content, $"Preset_{integration.Id}", Localization.Get(buttonKey), 14, 26f, 24f, 80f);
+            image.color = DarkButtonBg;
+            text.color = UIFactory.GetReadableTextColor(DarkButtonBg);
+            button.interactable = !_presetActionInProgress;
+            _contentGos.Add(row);
+
+            var capturedState = state;
+            button.onClick.AddListener(() => OnPresetButtonClicked(map, capturedState));
+
+            if (integration.GetAvailability() == IntegrationAvailability.NotInstalled)
+                AddRecommendedModButton($"InstallIntegration_{integration.Id}", integration.ModLinksName);
+        }
+    }
+
+    private bool _presetActionInProgress;
+
+    private async void OnPresetButtonClicked(MapRow map, PresetState state)
+    {
+        if (_presetActionInProgress) return;
+
+        switch (state)
+        {
+            case PresetState.Active:
+                PresetManager.DeactivatePresets(map, automatic: false);
+                RefreshContent();
+                ShowNotification(Localization.Get("presets.deactivated"), isError: false);
+                break;
+
+            case PresetState.Downloaded:
+                var activated = PresetManager.ActivatePresets(map, automatic: false);
+                RefreshContent();
+                if (activated.Count > 0)
+                    ShowNotification(Localization.Get("presets.activated", string.Join(", ", activated)), isError: false);
+                break;
+
+            default:
+                _presetActionInProgress = true;
+                RefreshContent();
+                var result = await PresetManager.DownloadPresetsAsync(map);
+                _presetActionInProgress = false;
+                if (!IsSameMap(_currentMap, map)) return;
+                RefreshContent();
+                ShowPresetDownloadResult(result);
+                break;
+        }
+    }
+
+    private void ShowPresetDownloadResult(MapRow map) =>
+        ShowPresetDownloadResult(GlobalListAtlasMod.Instance?.DownloadManager?.TakePresetResult(map));
+
+    private void ShowPresetDownloadResult(PresetDownloadResult result)
+    {
+        if (result == null) return;
+
+        if (result.Downloaded.Count > 0)
+            ShowNotification(Localization.Get("presets.downloaded", string.Join(", ", result.Downloaded)), isError: false);
+        if (result.Failed.Count > 0)
+            ShowNotification(Localization.Get("presets.download_failed", string.Join(", ", result.Failed)), isError: true);
     }
 
     private void AddBackupsButton()
@@ -1150,7 +2017,6 @@ public class MapDetailsPanel : MonoBehaviour
         button.onClick.AddListener(() => BackupsPopup.Show(_canvasRoot, RefreshContent));
     }
 
-    // Удаление скачанных файлов карты — по удержанию, чтобы не снести их случайно
     private void AddDeleteMapButton(MapRow map)
     {
         string idle = Localization.Get("delete.button_idle");
@@ -1174,7 +2040,6 @@ public class MapDetailsPanel : MonoBehaviour
         fillImage.color = DeleteCrimsonFill;
         fillImage.raycastTarget = false;
 
-        // Ширину фиксируем по самой длинной подписи, иначе кнопка "прыгает" при нажатии
         UIFactory.FitButtonWidthForLabels(go, text, 120f, idle, holding);
 
         var hold = go.AddComponent<HoldToConfirmButton>();
@@ -1185,17 +2050,25 @@ public class MapDetailsPanel : MonoBehaviour
         hold.OnConfirmed = () =>
         {
             var manager = GlobalListAtlasMod.Instance?.DownloadManager;
-            // DeleteMapFiles возвращает null при успехе, поэтому отсутствие менеджера
-            // проверяем отдельно — иначе успешное удаление выглядело бы как ошибка
+            var scenes = manager == null
+                ? new List<string>()
+                : SessionSceneTracker.GetDecorationMasterSceneNames(manager.GetTargetFolder(map));
             string error = manager == null
                 ? "Менеджер загрузки недоступен"
                 : manager.DeleteMapFiles(map);
+
+            if (error == null) PresetManager.DeleteStoredPresets(map);
             RefreshContent();
 
             if (error != null)
+            {
                 ShowNotification(Localization.Get("delete.failed", error), isError: true);
+            }
             else
+            {
                 ShowNotification(Localization.Get("delete.done", map.Name), isError: false);
+                RefreshEditorsAfterChange(map, map.Editors, null, scenes);
+            }
         };
 
         _contentGos.Add(row_go);
@@ -1260,7 +2133,6 @@ public class MapDetailsPanel : MonoBehaviour
         float panelWidth = _content.rect.width - contentHorizontalPadding;
         float textWidth = Mathf.Max(panelWidth - horizontalPadding * 2f, 1f);
 
-        // Расчет высоты текста Unity-генератором под точную ширину
         var generator = new TextGenerator();
         var settings = text.GetGenerationSettings(new Vector2(textWidth, 0f));
         settings.generateOutOfBounds = true;
@@ -1268,6 +2140,25 @@ public class MapDetailsPanel : MonoBehaviour
 
         SetRowHeight(panel.gameObject, preferredTextHeight + verticalPadding * 2f);
         _contentGos.Add(panel.gameObject);
+
+        ScrollToBottom();
+    }
+
+    private void ScrollToBottom()
+    {
+        if (_detailsScroll == null) return;
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(_content);
+        Canvas.ForceUpdateCanvases();
+        _detailsScroll.verticalNormalizedPosition = 0f;
+
+        if (isActiveAndEnabled) StartCoroutine(ScrollToBottomNextFrame());
+    }
+
+    private System.Collections.IEnumerator ScrollToBottomNextFrame()
+    {
+        yield return null;
+        if (_detailsScroll != null) _detailsScroll.verticalNormalizedPosition = 0f;
     }
     private Text AddWrappedText(string text, int fontSize, Color color, TextAnchor anchor = TextAnchor.UpperLeft)
     {
@@ -1366,13 +2257,17 @@ public class MapDetailsPanel : MonoBehaviour
             _installPublicModsButtonText.text = Localization.Get("button.installing");
         var results = await PublicModInstaller.DownloadMissingPublicModsAsync(map.RequiredPublicMods);
         _installPublicModsInProgress = false;
-        if (_currentMap?.Name != map.Name) return;
+        if (!IsSameMap(_currentMap, map)) return;
         var actuallyInstalled = results.Where(r => r.Success && r.InstalledFolder != null).ToList();
         var failed = results.Where(r => !r.Success).ToList();
         RefreshContent();
         if (actuallyInstalled.Count > 0)
         {
-            string installedList = string.Join(", ", actuallyInstalled.Select(r => r.ModName));
+            string installedList = string.Join(", ", actuallyInstalled
+                .SelectMany(r => r.InstalledFolder == "dependencies"
+                    ? r.InstalledDependencies
+                    : new[] { r.ModName }.Concat(r.InstalledDependencies))
+                .Distinct());
             ShowNotification(Localization.Get("mods.public_installed", installedList), isError: false);
         }
         if (failed.Count > 0)

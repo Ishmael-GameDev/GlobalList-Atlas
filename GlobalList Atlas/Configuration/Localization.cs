@@ -14,7 +14,6 @@ public enum Language
     Russian
 }
 
-// Строки интерфейса хранятся в JSON-ресурсах (Resources/Localization/<код>.json)
 public static class Localization
 {
     private const string FallbackCode = "en";
@@ -112,7 +111,6 @@ public static class Localization
         if (Tables.TryGetValue(FallbackCode, out var fallback) && fallback.TryGetValue(key, out var en))
             return en;
 
-        // Перевод отсутствует — возвращаем ключ, чтобы пропуск был заметен в UI
         return key;
     }
 

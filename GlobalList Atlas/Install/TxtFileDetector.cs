@@ -5,8 +5,6 @@ using System.Linq;
 
 namespace GlobalListAtlas.Install;
 
-// Ищет текстовые файлы (.txt, .md) во всём дереве распакованного архива карты.
-// Файл с именем "readme" (любое расширение из списка) помечается отдельно.
 public static class TxtFileDetector
 {
     public static readonly string[] TextExtensions = { ".txt", ".md" };

@@ -9,7 +9,6 @@ using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.UI;
 
-// Управляет отображением кнопки мода в главном меню игры
 internal static class MainMenuButtonManager
 {
     private static GameObject _buttonCanvasGo;
@@ -19,7 +18,6 @@ internal static class MainMenuButtonManager
 
     public static void Initialize()
     {
-        // Невидимый объект для проверки состояния меню в Update
         var go = new GameObject("GlobalListAtlas_MenuButtonRunner");
         UnityEngine.Object.DontDestroyOnLoad(go);
         go.hideFlags = HideFlags.HideAndDontSave;

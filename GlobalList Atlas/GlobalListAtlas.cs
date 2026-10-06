@@ -16,7 +16,7 @@ public class GlobalListAtlasMod : Mod, IGlobalSettings<GlobalSettings>
 
     public event Action LanguageChanged;
     public GlobalListAtlasMod() : base("GlobalList Atlas") { }
-    public override string GetVersion() => "1.5.0";
+    public override string GetVersion() => "2.5.0";
     public MapDownloadManager DownloadManager => _downloadManager;
 
     public event Action<bool> AutoSaveToggled;
@@ -34,8 +34,10 @@ public class GlobalListAtlasMod : Mod, IGlobalSettings<GlobalSettings>
     public override void Initialize()
     {
         Instance = this;
+        System.Net.ServicePointManager.DefaultConnectionLimit = 256;
         Install.RestartTracker.CaptureBaseline();
         Util.ModChangeScheduler.InstallQuitHook();
+        Maps.SessionSceneTracker.Initialize();
         Configuration.Localization.Initialize();
         Configuration.Localization.SetLanguage(
             _settings.CurrentLanguage == "ru"

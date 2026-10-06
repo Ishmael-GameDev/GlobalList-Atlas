@@ -5,7 +5,6 @@ using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.Install;
 
-
 public static class RestartTracker
 {
     private static HashSet<string> _baseline;
@@ -22,9 +21,8 @@ public static class RestartTracker
     {
         var changes = new List<(string, bool)>();
         if (_baseline == null)
-            return changes; // baseline не снят — считаем, что изменений нет
+            return changes;
 
-        // Учитываем и отложенные изменения — после перезапуска они уже будут применены
         var current = PendingModChanges.GetEffectiveEnabledFolders();
 
         foreach (var name in current.Except(_baseline, StringComparer.OrdinalIgnoreCase))

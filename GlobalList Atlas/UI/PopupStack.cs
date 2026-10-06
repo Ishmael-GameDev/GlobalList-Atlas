@@ -53,6 +53,5 @@ public static class PopupStack
         Stack.Clear();
     }
 
-    // Окно могли уничтожить мимо стека — чистим "мёртвые" ссылки
     private static void Prune() => Stack.RemoveAll(p => p == null);
 }

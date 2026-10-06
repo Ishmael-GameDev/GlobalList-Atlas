@@ -7,10 +7,8 @@ using GlobalListAtlas.Logging;
 
 namespace GlobalListAtlas.Utility;
 
-// Утилиты для работы с операционной системой
 public static class SystemUtils
 {
-    // Открывает ссылку в браузере по умолчанию
     public static void OpenUrl(string url)
     {
         if (string.IsNullOrEmpty(url))
@@ -21,7 +19,6 @@ public static class SystemUtils
 
         try
         {
-            // Application.OpenURL сам выбирает браузер по умолчанию на всех платформах
             Application.OpenURL(url);
             Log.Info($"Открыта ссылка: {url}");
         }
@@ -31,7 +28,6 @@ public static class SystemUtils
         }
     }
 
-    // Открывает указанную папку в системном файловом менеджере
     public static void OpenFolderInExplorer(string path)
     {
         if (string.IsNullOrEmpty(path))
@@ -65,7 +61,6 @@ public static class SystemUtils
             }
             else
             {
-                // Фолбэк на метод Unity для неизвестных ОС
                 Application.OpenURL("file://" + path);
             }
 
