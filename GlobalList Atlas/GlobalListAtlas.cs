@@ -52,6 +52,8 @@ public class GlobalListAtlasMod : Mod, IGlobalSettings<GlobalSettings>
         var detailsHostGo = new UnityEngine.GameObject("GlobalListAtlas_MapDetailsPanelHost");
         UnityEngine.Object.DontDestroyOnLoad(detailsHostGo);
         detailsHostGo.AddComponent<MapDetailsPanel>();
+        Install.HkmpArchitectLock.RegisterHkmpAddons();
+        GlobalListAtlas.UI.HkmpLockPanel.EnsureCreated();
         GlobalListAtlas.Logging.Log.Info("Мод инициализирован");
     }
 
